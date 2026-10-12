@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="riverlens-token" content="__TOKEN__">
+  <title>RiverLens · Poker study room</title>
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="RiverLens home"><span class="brand-icon">♠</span><span>River<span class="soft">Lens</span><small>POKER STUDY ROOM</small></span></a>
+  <div class="workspace-label">IL TUO SPAZIO <span>v0.1</span></div>
+  <nav aria-label="Sezioni">
+    <button class="nav active" data-tab="replay"><span>▤</span> Replay delle mani</button>
+    <button class="nav" data-tab="lab"><span>◇</span> Laboratorio</button>
+    <button class="nav" data-tab="image"><span>▧</span> Screenshot archiviato</button>
+  </nav>
+  <button id="open-import" class="primary import-button">＋ Importa hand history</button>
+  <div class="workspace-label archive-title">ARCHIVIO DELLA SESSIONE <span id="hand-count">0</span></div>
+  <div id="hand-list" class="hand-list" aria-label="Mani importate"></div>
+  <div class="sidebar-bottom">
+    <div class="local-note"><span class="dot"></span> Locale, sul tuo computer</div>
+    <p>Le mani restano in questa sessione. Solo i dati che scegli di analizzare con AI vengono inviati a OpenAI.</p>
+    <button id="settings-button" class="settings"><span>⚙</span> Collegamento OpenAI <span id="ai-dot" class="dot muted"></span></button>
+  </div>
+</aside>
+<main>
+  <header class="topbar"><div><span class="eyebrow">TEXAS HOLD’EM</span><span class="slash">/</span><span id="breadcrumb">REPLAY</span></div><span class="mode-pill"><span class="dot"></span> Studio offline</span></header>
+  <div class="page-heading"><div><h1 id="page-title">Ogni mano ha una storia.</h1><p id="page-subtitle">Rivedi le decisioni. Separa i numeri dalle sensazioni.</p></div><span class="outline-tag">MVP · 0.1.0</span></div>
+  <section id="image-section" hidden>
+    <div class="panel image-workspace"><div><span class="eyebrow">DALLO SCREENSHOT ALLO SCENARIO</span><h2>Un tavolo, un fotogramma.</h2><p>Carica un’immagine già archiviata. La lettura AI propone una trascrizione che dovrai verificare prima del calcolo.</p>
+      <label class="file-drop">Scegli PNG, JPG o WebP · max 4 MB<input id="image-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
+      <label class="check"><input id="archived-check" type="checkbox"> Questo screenshot proviene da una mano conclusa o simulata.</label>
+      <label class="check"><input id="vision-consent" type="checkbox"> Invia questa immagine a OpenAI per trascriverla. La richiesta usa la mia API key.</label>
+      <button id="read-image" class="primary" disabled>Trascrivi con AI ↗</button><p id="vision-status" class="small" role="status"></p>
+    </div><div class="image-preview"><img id="uploaded-image" alt="Anteprima dello screenshot archiviato" hidden><span id="image-placeholder">▧<small>La tua immagine apparirà qui</small></span></div></div>
+  </section>
+  <div class="study-grid" id="study-grid">
+    <div class="main-column">
+      <section id="lab-section" class="panel lab-panel" hidden>
+        <div class="section-top"><div><span class="eyebrow">COSTRUISCI UNO SCENARIO</span><h2>La tua ipotesi, alla prova.</h2></div><span class="subtle">Unità: chip</span></div>
+        <div class="presets"><button data-preset="draw">Progetto di colore</button><button data-preset="pair">Coppia vs overcard</button><button data-preset="river">Showdown condiviso</button></div>
+        <form id="lab-form">
+          <div class="field-grid"><label>Le tue carte<input id="hero-input" value="Ah Qh" placeholder="Ah Qh" required></label><label class="wide">Board<input id="board-input" value="Jh Th 2c" placeholder="Vuoto, oppure 3 / 4 / 5 carte"></label><label>Avversari<select id="opponents-input"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option></select></label></div>
+          <div class="field-grid second"><label>Piatto attuale<input id="pot-input" type="number" min="0" step="0.01" value="20" required></label><label>Importo del call<input id="call-input" type="number" min="0" step="0.01" value="8" required></label><label class="wide">Carte avversarie <span class="subtle">· opzionale, heads-up</span><input id="villain-input" placeholder="Es. Jc Jd; vuoto = casuali"></label></div>
+          <p class="input-help">Il piatto include la puntata avversaria. Semi: <b>h</b> cuori, <b>d</b> quadri, <b>c</b> fiori, <b>s</b> picche. Dieci = <b>T</b>.</p>
+          <div id="vision-notes" class="notice" hidden></div><button class="primary" type="submit">Calcola lo scenario <span>↗</span></button>
+        </form>
+      </section>
+      <section class="panel table-panel">
+        <div class="section-top"><div><span class="eyebrow" id="table-kicker">MANO DIMOSTRATIVA</span><h2 id="hand-title">Caricamento…</h2></div><span id="street-badge" class="street-badge">FLOP</span></div>
+        <div class="felt">
+          <div id="opponent-seats" class="opponent-seats"></div>
+          <div class="board-area"><span class="felt-label">PIATTO ATTUALE</span><div class="pot-number" id="pot-number">—</div><div class="board-cards" id="board-cards" aria-label="Carte comuni"></div><span id="table-message" class="table-message">Le carte future restano nascoste nel replay.</span></div>
+          <div class="hero-area"><div class="hero-cards" id="hero-cards" aria-label="Le tue carte"></div><div class="hero-info"><span id="hero-name">Hero</span><strong id="hero-stack">—</strong></div><span id="hero-position" class="position-badge">HERO</span></div>
+        </div>
+        <div class="table-footer"><span id="turn-label">Replay di una mano conclusa</span><span>Da chiamare <b id="call-amount">—</b></span></div>
+      </section>
+      <section class="panel replay-panel" id="replay-panel">
+        <div class="section-top"><div><span class="eyebrow">RICOSTRUZIONE DELLA MANO</span><h2>Un’azione alla volta.</h2></div><span id="step-count" class="subtle"></span></div>
+        <div class="timeline-controls"><button id="previous-step" class="icon-button" aria-label="Azione precedente">←</button><input type="range" id="step-slider" min="0" max="1" value="0" aria-label="Posizione nel replay"><button id="next-step" class="icon-button" aria-label="Azione successiva">→</button></div>
+        <div id="action-list" class="action-list"></div>
+      </section>
+      <p class="footer-note">RiverLens / Il risultato di una mano non misura, da solo, la qualità della decisione.</p>
+    </div>
+    <aside class="analysis-column">
+      <section class="panel analysis-panel">
+        <div class="section-top"><div><span class="eyebrow">MOTORE LOCALE</span><h2>Dentro i numeri.</h2></div><span class="engine-icon">◈</span></div>
+        <div id="analysis-empty" class="analysis-empty"><div>◎</div><h3>Esplora questo punto.</h3><p>Calcola l’equity allo showdown e il costo del call. Nel replay, scegli un punto in cui Hero deve agire.</p></div>
+        <div id="analysis-result" hidden>
+          <div class="equity-ring" id="equity-ring"><div><span id="equity-value">—</span><small>EQUITY</small></div></div>
+          <p id="equity-confidence" class="confidence"></p><div id="made-hand" class="made-hand"></div>
+          <dl class="metrics"><div><dt>Vittoria esclusiva</dt><dd id="win-value">—</dd></div><div><dt>Showdown in parità</dt><dd id="tie-value">—</dd></div><div><dt>Soglia del call</dt><dd id="odds-value">—</dd></div><div><dt>EV del call · modello*</dt><dd id="ev-value">—</dd></div></dl>
+          <div class="assumption"><span>IPOTESI DI CALCOLO</span><p id="assumption-text"></p></div>
+          <p class="small">* Nessuna puntata successiva, nessun side pot, nessun rake. L’equity contro mani casuali non equivale a quella contro un range di puntata.</p>
+          <div class="calculation-meta"><span id="sample-count"></span><span id="calculation-time"></span></div>
+        </div>
+        <button id="calculate-button" class="primary full">Calcola equity ↗</button><p id="analysis-status" class="small" role="status"></p>
+      </section>
+      <section class="panel coach-panel"><div class="section-top"><div><span class="eyebrow">SPIEGAZIONE OPZIONALE</span><h2>Un secondo sguardo.</h2></div><span>✧</span></div><p class="coach-intro">OpenAI interpreta i numeri e chiarisce quali informazioni mancano. Non è un solver GTO.</p><label class="check"><input id="ai-consent" type="checkbox"> Invia a OpenAI carte, piatto e calcoli di questo punto.</label><button id="explain-button" class="secondary full">Spiega con AI ↗</button><div id="ai-answer" class="ai-answer" role="status"></div></section>
+    </aside>
+  </div>
+</main>
+<div id="toast" role="status" hidden></div>
+<dialog id="import-dialog"><div class="dialog-heading"><h2>Importa mani concluse</h2><button class="close-dialog" aria-label="Chiudi">×</button></div><p>Hand history PokerStars in inglese, Texas Hold’em No Limit. Puoi importare fino a 200 mani / 2 MB.</p><label class="file-drop">Apri un file .txt<input id="history-file" type="file" accept=".txt,text/plain"></label><label>Oppure incolla il testo<textarea id="history-text" rows="9" placeholder="PokerStars Hand #…&#10;…&#10;*** SUMMARY ***"></textarea></label><p id="import-error" class="error" role="alert"></p><div class="dialog-actions"><button id="demo-button" class="secondary">Carica esempi</button><button id="import-confirm" class="primary">Importa e rivedi</button></div></dialog>
+<dialog id="settings-dialog"><div class="dialog-heading"><h2>Collega OpenAI</h2><button class="close-dialog" aria-label="Chiudi">×</button></div><p id="connection-status"></p><ol><li>Copia <code>.env.example</code> in <code>.env</code> nella cartella RiverLens.</li><li>Inserisci <code>OPENAI_API_KEY</code> e <code>OPENAI_MODEL</code>. Per gli screenshot scegli un modello con input immagini.</li><li>Riavvia l’app e ricarica questa pagina.</li></ol><p>La chiave resta nel processo locale. Le richieste AI vengono inviate solo premendo il relativo pulsante e confermando i dati. Usa una chiave API del tuo progetto OpenAI; non le credenziali di accesso a ChatGPT.</p><p class="notice">Replay, importazione e simulazioni non richiedono alcuna chiave. Le chiamate API possono comportare costi sul tuo progetto OpenAI.</p><button class="primary close-dialog">Ho capito</button></dialog>
+</body>
+</html>

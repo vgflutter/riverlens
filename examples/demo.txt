@@ -1,0 +1,57 @@
+PokerStars Hand #100001: Hold'em No Limit (1/2) - 2026/10/01 20:00:00 CET
+Table 'RiverLens Demo - synthetic chips' 6-max Seat #3 is the button
+Seat 1: Hero (200 in chips)
+Seat 2: Alex (200 in chips)
+Seat 3: River (200 in chips)
+Hero: posts small blind 1
+Alex: posts big blind 2
+*** HOLE CARDS ***
+Dealt to Hero [Ah Qh]
+River: folds
+Hero: raises 4 to 6
+Alex: calls 4
+*** FLOP *** [Jh Th 2c]
+Hero: checks
+Alex: bets 8
+Hero: calls 8
+*** TURN *** [Jh Th 2c] [3s]
+Hero: checks
+Alex: bets 18
+Hero: calls 18
+*** RIVER *** [Jh Th 2c 3s] [Kh]
+Hero: bets 40
+Alex: calls 40
+*** SHOW DOWN ***
+Hero: shows [Ah Qh] (a Royal Flush)
+Alex: shows [Jc Jd] (three of a kind, Jacks)
+Hero collected 144 from pot
+*** SUMMARY ***
+Total pot 144 | Rake 0
+Board [Jh Th 2c 3s Kh]
+Seat 1: Hero (small blind) showed [Ah Qh] and won (144) with a Royal Flush
+Seat 2: Alex (big blind) showed [Jc Jd] and lost with three of a kind, Jacks
+Seat 3: River (button) folded before Flop (didn't bet)
+
+PokerStars Hand #100002: Hold'em No Limit (1/2) - 2026/10/01 20:05:00 CET
+Table 'RiverLens Demo - synthetic chips' 6-max Seat #1 is the button
+Seat 1: Hero (200 in chips)
+Seat 2: Alex (200 in chips)
+Seat 3: River (200 in chips)
+Alex: posts small blind 1
+River: posts big blind 2
+*** HOLE CARDS ***
+Dealt to Hero [9s 9d]
+Hero: raises 4 to 6
+Alex: folds
+River: calls 4
+*** FLOP *** [Ac Kd 4h]
+River: bets 9
+Hero: folds
+Uncalled bet (9) returned to River
+River collected 13 from pot
+*** SUMMARY ***
+Total pot 13 | Rake 0
+Board [Ac Kd 4h]
+Seat 1: Hero (button) folded on the Flop
+Seat 2: Alex (small blind) folded before Flop
+Seat 3: River (big blind) collected (13)
