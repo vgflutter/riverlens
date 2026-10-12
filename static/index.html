@@ -9,8 +9,9 @@
 <body>
 <aside class="sidebar">
   <a class="brand" href="/" aria-label="RiverLens home"><span class="brand-icon">♠</span><span>River<span class="soft">Lens</span><small>POKER STUDY ROOM</small></span></a>
-  <div class="workspace-label">IL TUO SPAZIO <span>v0.2.1</span></div>
+  <div class="workspace-label">IL TUO SPAZIO <span>v0.3.0</span></div>
   <nav aria-label="Sezioni">
+    <a class="nav" href="/screen"><span>▧</span> Analizza schermo · tutti i giochi</a>
     <button class="nav active" data-tab="replay"><span>▤</span> Replay delle mani</button>
     <button class="nav" data-tab="lab"><span>◇</span> Laboratorio</button>
     <button class="nav" data-tab="image"><span>▧</span> Screenshot archiviato</button>
@@ -26,7 +27,7 @@
 </aside>
 <main>
   <header class="topbar"><div><span class="eyebrow">TEXAS HOLD’EM</span><span class="slash">/</span><span id="breadcrumb">REPLAY</span></div><span class="mode-pill"><span class="dot"></span> Studio offline</span></header>
-  <div class="page-heading"><div><h1 id="page-title">Ogni mano ha una storia.</h1><p id="page-subtitle">Rivedi le decisioni. Separa i numeri dalle sensazioni.</p></div><span class="outline-tag">MVP · 0.2.1</span></div>
+  <div class="page-heading"><div><h1 id="page-title">Ogni mano ha una storia.</h1><p id="page-subtitle">Rivedi le decisioni. Separa i numeri dalle sensazioni.</p></div><span class="outline-tag">MVP · 0.3.0</span></div>
   <section id="decision-panel" class="panel decision-panel" aria-live="polite">
     <div class="decision-main"><div class="section-top"><span class="eyebrow">PROPOSTA AUTOMATICA · STUDIO OFFLINE</span><span id="decision-source" class="outline-tag">REGOLA LOCALE</span></div><h2 id="decision-action">Preparazione…</h2><p id="decision-reason">Una mossa, un importo, una motivazione.</p><p id="decision-assumptions" class="small"></p><div id="legal-actions" class="legal-pills"></div></div>
     <div class="decision-budget"><div class="section-top"><span class="eyebrow">STACK AUTOMATICO</span><button id="budget-button" class="secondary">Limiti facoltativi</button></div><p id="budget-summary">Lo stack viene acquisito dai dati della mano.</p><p class="small">Stile: deciso, orientato al valore atteso positivo. Il profitto non è garantito.</p><label class="check"><input id="auto-ai" type="checkbox"> Attiva AI automatica per questa sessione di studio: invia carte, azioni, profili anonimi e budget. Le chiamate API possono avere un costo.</label><p id="decision-ai-status" class="small"></p></div>

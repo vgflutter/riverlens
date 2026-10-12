@@ -1,9 +1,10 @@
-# RiverLens local API · 0.2.1
+# RiverLens local API · 0.3.0
 
 Base URL: `http://127.0.0.1:8765`. All writes require JSON and the per-process
 `X-RiverLens-Token`, exposed to the local UI in the root HTML meta tag
 `riverlens-token`. The server enforces loopback Host and same-origin browser requests.
-No endpoint executes game actions or captures a live desktop.
+No endpoint executes game actions. The `/screen` browser UI captures a user-selected surface;
+the server receives only the submitted still images.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -16,6 +17,55 @@ No endpoint executes game actions or captures a live desktop.
 | POST `/api/analyze` | Existing equity calculator. |
 | POST `/api/explain` | Optional short explanation, requires `consent: true`. |
 | POST `/api/vision` | Manual archived-image transcription, requires `archived: true` and `consent: true`. |
+| POST `/api/screen/analyze` | Game-agnostic visual advice from 1–3 frames; requires `consent: true`. |
+
+## Analyze a game screen
+
+```json
+{
+  "consent": true,
+  "frames": [
+    {"image": "data:image/jpeg;base64,...", "captured_at": "2026-10-12T09:00:00.000Z"}
+  ],
+  "game_hint": "",
+  "goal": "I play white. Help me protect the king."
+}
+```
+
+Frames must be chronological, with strictly increasing ISO 8601 timestamps including a timezone.
+Timestamps represent capture/upload time, not proof of the original game time. Accepted image data
+URLs: PNG, JPEG, WebP. Each is limited to 2 MB decoded, with 4 MB total and at most 3 frames.
+The transport body limit remains 6 MB. Base64 and file signatures are checked; actual image decoding
+is performed by the browser/provider. Remote image URLs are not accepted. `game_hint` (120 chars)
+and `goal` (1000 chars) are optional strings. Unknown fields are not forwarded to the provider.
+
+This route uses OpenAI Responses with image content, `store: false`, strict Structured Outputs,
+and the same call counter as all other AI features. It needs an image-capable model and has no
+local fallback, automatic retry, persistent cache or database writes. One screen request runs at a
+time. A concurrent request is rejected without a paid call. Validation/provider failures return
+HTTP 400; the shared server worker limit can return 429. Existing token, Host and Origin checks apply.
+
+The result includes:
+
+- `status`: `ready`, `needs_context` or `not_game`.
+- `game`: nullable `title`, nullable `genre`, qualitative `confidence` (`low`, `medium`, `high`).
+- `summary`, `observations[]`, `changes[]`, `uncertainties[]`: concise Italian text. `changes` is
+  forced empty for a single-frame request.
+- `turn`: `player`, `opponent`, `simultaneous`, `unknown` or `not_applicable`.
+- `next_move`: `{action, reason, steps[]}` or `null`; up to 3 `alternatives` with `{action, reason}`.
+- `question`: one clarification question or `null`; `confidence`: qualitative analysis confidence.
+- `source: "screen_ai"`, `model`, `frame_count`, latest `captured_at` and server `analyzed_at`.
+
+All fields are independently type-checked after the provider responds. Non-ready results never
+include a move or alternatives. Low confidence, uncertain game recognition, unknown/opponent turn
+or an absent move converts an otherwise ready report into `needs_context`. These checks are **not**
+a game-rules engine: move legality, optimality and image understanding remain model-dependent.
+The request does not invoke the poker study engine or its budget constraints. No game inputs execute.
+
+The UI samples locally every 2 s, keeps at most 3 distinct frames from the last 30 s, and optionally
+analyzes after a configurable 5/10/20/30 s pause following the preceding response (default 10 s).
+Exact duplicate images skip automatic calls. Source/context changes discard obsolete responses.
+Images are shown as text-free previews; all model text is rendered with `textContent`, never HTML.
 
 ## Optional session limits
 

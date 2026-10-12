@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="riverlens-token" content="__TOKEN__">
+  <title>RiverLens · Analizza schermo</title>
+  <link rel="stylesheet" href="/screen.css"><script src="/screen.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/screen"><span class="brand-mark">R</span>River<span>Lens</span></a><nav aria-label="Sezioni"><a href="/screen" aria-current="page">Analizza schermo</a><a href="/">Studio poker</a></nav><span class="local-badge">Sul tuo computer</span></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">UN’IMMAGINE. LA PROSSIMA MOSSA.</p><h1>Guarda il gioco da un’altra prospettiva.</h1><p>Condividi la finestra del gioco o carica uno screenshot. RiverLens legge la situazione e ti aiuta a decidere.</p></div><span class="version">0.3.0 · PREVIEW</span></div>
+    <div id="connection" class="notice" role="status">Verifica del collegamento AI…</div>
+    <div class="workspace">
+      <section class="panel capture-panel" aria-labelledby="capture-heading">
+        <div class="panel-heading"><div><p class="eyebrow">01 / IL TUO SCHERMO</p><h2 id="capture-heading">Scegli cosa vedere.</h2></div><span id="source-badge" class="badge">Nessuna sorgente</span></div>
+        <div class="capture-buttons"><button id="share" class="primary">Collega schermo</button><label class="button secondary" for="file">Carica screenshot</label><input id="file" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp"><button id="stop" class="quiet" disabled>Interrompi</button></div>
+        <div id="preview" class="preview">
+          <div id="placeholder" class="placeholder"><div class="viewfinder" aria-hidden="true">＋</div><h3>Ogni gioco ha il suo prossimo passo.</h3><p>Scacchi, carte, puzzle, strategia, avventure…<br>La lettura parte da quello che si vede.</p><span>Puoi anche incollare uno screenshot con Ctrl/Cmd + V.</span></div>
+          <video id="video" autoplay muted playsinline hidden aria-label="Anteprima della finestra condivisa"></video>
+          <img id="image" hidden alt="Screenshot selezionato per l’analisi">
+        </div>
+        <p id="capture-status" class="caption" role="status">L’anteprima resta locale finché non autorizzi e avvii l’analisi.</p>
+        <details class="crop-settings"><summary>Ritaglia l’area del gioco</summary><p class="caption">Percentuali della finestra o immagine. Solo quest’area viene inviata.</p><div class="crop-grid"><label>Sinistra %<input id="crop-x" type="number" min="0" max="99" value="0"></label><label>Alto %<input id="crop-y" type="number" min="0" max="99" value="0"></label><label>Larghezza %<input id="crop-w" type="number" min="1" max="100" value="100"></label><label>Altezza %<input id="crop-h" type="number" min="1" max="100" value="100"></label></div><button id="reset-crop" class="quiet">Ripristina area intera</button></details>
+        <div class="frame-strip"><div><p class="eyebrow">ULTIMO FOTOGRAMMA PREPARATO</p><p id="frame-info" class="caption">In attesa di una sorgente.</p></div><img id="frame-preview" alt="Area ritagliata che verrà analizzata" hidden></div>
+      </section>
+      <aside class="panel controls" aria-labelledby="controls-heading">
+        <p class="eyebrow">02 / IL TUO OBIETTIVO</p><h2 id="controls-heading">Un consiglio nel contesto.</h2>
+        <label for="game-hint">Gioco <span>facoltativo</span></label><input id="game-hint" maxlength="120" placeholder="Riconoscimento automatico">
+        <label for="goal">Cosa vuoi ottenere? <span>facoltativo</span></label><textarea id="goal" rows="3" maxlength="1000" placeholder="Es. gioco con i bianchi. Voglio proteggere il re."></textarea>
+        <label class="check consent"><input id="consent" type="checkbox"><span>Autorizzo l’invio a OpenAI dell’area selezionata (fino a 3 fotogrammi) e del contesto. Le chiamate API possono avere un costo.</span></label>
+        <button id="analyze" class="primary analyze" disabled>Analizza adesso <span aria-hidden="true">↗</span></button>
+        <div class="automatic"><label class="check"><input id="auto" type="checkbox" disabled><span><strong>Analisi automatica</strong><small>Invii ripetuti quando l’immagine cambia.</small></span></label><label for="interval">Pausa fra le analisi</label><select id="interval"><option value="5">5 secondi</option><option value="10" selected>10 secondi</option><option value="20">20 secondi</option><option value="30">30 secondi</option></select><p class="caption">Cattura locale ogni 2 s. Una sola richiesta alla volta. La pausa parte al termine della risposta.</p></div>
+        <p id="usage" class="caption"></p><p id="operation-status" class="operation" role="status" aria-live="polite">Scegli una sorgente per iniziare.</p>
+        <details class="help"><summary>Come funziona</summary><p>Il modello identifica il gioco e lo stato visibile. Se mancano regole, turno o informazioni decisive, ti chiede un dettaglio prima di proporre una mossa.</p><p>Nei giochi d’azione, usalo come supporto tattico in pausa: la risposta AI può arrivare quando la situazione è già cambiata.</p><p>Non esegue mosse. Gli screenshot restano in memoria e non vengono archiviati da RiverLens. Scegli una finestra o ritaglia per escludere altri contenuti.</p></details>
+      </aside>
+    </div>
+    <section class="panel result-panel" aria-labelledby="result-heading" aria-live="polite" aria-busy="false" id="result-panel">
+      <div class="panel-heading"><div><p class="eyebrow">03 / LA PROSSIMA MOSSA</p><h2 id="result-heading">Prima osservare, poi decidere.</h2></div><span id="confidence" class="badge">In attesa</span></div>
+      <div id="result-empty" class="result-empty"><p>Qui troverai una proposta concreta, il motivo e le alternative.</p><span>Un consiglio basato sull’immagine, da verificare nel gioco.</span></div>
+      <div id="result" hidden>
+        <div class="result-meta"><span id="game-name"></span><span id="result-time"></span></div>
+        <p id="stale" class="notice warning" hidden>Il gioco potrebbe essere cambiato: questa analisi riguarda il fotogramma indicato.</p>
+        <div class="result-grid"><div><h3 id="move"></h3><p id="reason" class="reason"></p><ol id="steps"></ol><p id="question" class="question" hidden></p><div id="alternatives" class="alternatives"></div></div><div class="evidence"><h4>Situazione osservata</h4><p id="summary"></p><ul id="observations"></ul><h4 id="changes-title" hidden>Cosa è cambiato</h4><ul id="changes"></ul><h4 id="uncertainties-title" hidden>Da verificare</h4><ul id="uncertainties"></ul></div></div>
+      </div>
+    </section>
+    <footer>RiverLens · Riconoscimento visivo generico, qualità variabile secondo il gioco e l’immagine. Nessuna garanzia di mossa ottimale.</footer>
+  </main>
+</body>
+</html>
