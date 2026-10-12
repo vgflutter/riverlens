@@ -1,9 +1,10 @@
-# RiverLens local API · 0.2.1
+# RiverLens local API · 0.3.0
 
 Base URL: `http://127.0.0.1:8765`. All writes require JSON and the per-process
 `X-RiverLens-Token`, exposed to the local UI in the root HTML meta tag
 `riverlens-token`. The server enforces loopback Host and same-origin browser requests.
-No endpoint executes game actions or captures a live desktop.
+No endpoint executes game actions. The `/screen` browser UI captures a user-selected surface;
+the server receives only the submitted still images.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -16,6 +17,73 @@ No endpoint executes game actions or captures a live desktop.
 | POST `/api/analyze` | Existing equity calculator. |
 | POST `/api/explain` | Optional short explanation, requires `consent: true`. |
 | POST `/api/vision` | Manual archived-image transcription, requires `archived: true` and `consent: true`. |
+| POST `/api/screen/analyze` | Game-agnostic visual advice from 1–3 frames; requires `consent: true`. |
+
+## Analyze a game screen
+
+```json
+{
+  "consent": true,
+  "mode": "fast",
+  "deadline_ms": 5000,
+  "frames": [
+    {"image": "data:image/jpeg;base64,...", "captured_at": "2026-10-12T09:00:00.000Z"}
+  ],
+  "game_hint": "",
+  "goal": "I play white. Help me protect the king."
+}
+```
+
+Frames must be chronological, with strictly increasing ISO 8601 timestamps including a timezone.
+Timestamps represent capture/upload time, not proof of the original game time. Accepted image data
+URLs: PNG, JPEG, WebP. Each is limited to 2 MB decoded, with 4 MB total and at most 3 frames.
+The transport body limit remains 6 MB. Base64 and file signatures are checked; actual image decoding
+is performed by the browser/provider. Remote image URLs are not accepted. `game_hint` (120 chars)
+and `goal` (1000 chars) are optional strings. Unknown fields are not forwarded to the provider.
+`mode` is `fast` or `detailed` (omission preserves the detailed API contract; the browser defaults
+to fast). `deadline_ms` is an integer: 2000, 3000, 5000, 8000, 15000 or 30000; default 5000.
+Fast mode validates all supplied frames but sends only the latest one to the model. It uses a
+compact schema (game, turn, action, reason, confidence, uncertainty and question) and 400 output
+tokens, then expands the answer to the standard result below. Detailed mode retains up to three
+images and 1600 output tokens. Both apply the same uncertain-state abstention checks.
+
+This route uses OpenAI Responses with image content, `store: false`, strict Structured Outputs,
+and the same call counter as all other AI features. It needs an image-capable model and has no
+local fallback, automatic retry, persistent cache or database writes. One screen request runs at a
+time. A concurrent request is rejected without a paid call. Validation/provider failures return
+HTTP 400; the shared server worker limit can return 429. A response past the server's monotonic
+deadline returns HTTP 408 with `code: "deadline_exceeded"` and no move. The network socket timeout
+uses the selected window; it is not a hard cancellation of remote inference. Late completed output
+is discarded even if socket timeouts did not interrupt it. Existing token, Host and Origin checks apply.
+`OPENAI_SCREEN_MODEL` overrides `OPENAI_MODEL` only for this route. `/api/status` exposes its name
+as `screen_model` and its configuration state as `screen_ai_ready`; API keys are never returned.
+
+The result includes:
+
+- `status`: `ready`, `needs_context` or `not_game`.
+- `game`: nullable `title`, nullable `genre`, qualitative `confidence` (`low`, `medium`, `high`).
+- `summary`, `observations[]`, `changes[]`, `uncertainties[]`: concise Italian text. `changes` is
+  forced empty for a single-frame request.
+- `turn`: `player`, `opponent`, `simultaneous`, `unknown` or `not_applicable`.
+- `next_move`: `{action, reason, steps[]}` or `null`; up to 3 `alternatives` with `{action, reason}`.
+- `question`: one clarification question or `null`; `confidence`: qualitative analysis confidence.
+- `source: "screen_ai"`, `model`, `frame_count`, latest `captured_at` and server `analyzed_at`.
+- `mode`, `deadline_ms`, `elapsed_ms`: mode, decision window and measured server elapsed time.
+
+All fields are independently type-checked after the provider responds. Non-ready results never
+include a move or alternatives. Low confidence, uncertain game recognition, unknown/opponent turn
+or an absent move converts an otherwise ready report into `needs_context`. These checks are **not**
+a game-rules engine: move legality, optimality and image understanding remain model-dependent.
+The request does not invoke the poker study engine or its budget constraints. No game inputs execute.
+
+The UI samples locally every 0.5 s, retains up to 3 distinct recent frames and starts automatic
+analysis on change without a fixed post-response pause. It does not queue intermediate frames.
+Exact duplicates skip calls. A client monotonic deadline covers capture/upload/response, independently
+of server timing. Source/context changes and elapsed deadlines discard responses. A live source is
+re-captured at completion: changed images are discarded, and already-visible advice is withdrawn on
+image change or expiration. Background throttling cannot make a late response valid. Timeout/error
+pauses automatic mode; an old provider request can still finish and incur cost. All model text uses
+`textContent`, never HTML. These are freshness controls, not a real-time or gameplay accuracy guarantee.
 
 ## Optional session limits
 
@@ -123,9 +191,9 @@ missing fields, displays account balance separately, and gates automatic proposa
 confirmation; edits invalidate that confirmation. Confirmed lab inputs remain a simulation,
 not a live source. No image or balance is persisted or linked to the replay archive.
 
-## OpenAI contract and safeguards
+## Poker study OpenAI contract and safeguards
 
-Responses API `POST /v1/responses`, server-side bearer key, `store: false`, 1600 output-token
+Responses API `POST /v1/responses`, server-side bearer key, `store: false`, up to 1600 output-token
 limit and 50-second timeout. JSON Schema is supplied through `text.format` with `strict: true`.
 `candidate_id` is an enum generated from the current budget-compliant candidates, plus `null`.
 The server validates returned fields and candidate membership again before displaying a move.
@@ -141,5 +209,5 @@ cannot bypass local limits. The returned `ai_status` and reason distinguish fall
 Changing state in the browser hides the old recommendation immediately; stale replies are ignored.
 
 `OPENAI_MAX_CALLS` caps attempts per server start, not spending in currency. Failed attempts count.
-The cap is shared by recommendations, explanations and image transcription. Paid integration
+The cap is shared by recommendations, explanations, image transcription and screen analysis. Paid integration
 is covered with mocked responses; no live key was available for end-to-end provider testing.

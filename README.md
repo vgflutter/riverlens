@@ -1,8 +1,8 @@
 # RiverLens
 
-**Offline poker hand replay, equity analysis and AI-powered review.**
+**Screenshot-based game advice, plus offline poker replay and equity analysis.**
 
-A small local study room for completed Texas Hold’em hands and simulated scenarios.
+A local screen assistant for different kinds of games, with a dedicated study room for completed Texas Hold’em hands and simulated scenarios.
 Python 3.10+ and a browser. No pip, npm, database setup or build step required.
 The initial interface is in Italian.
 
@@ -23,7 +23,74 @@ chmod +x Start-RiverLens.command
 On Windows, install Python 3.10+ and run `start-windows.bat`.
 If the port is occupied: `python3 server.py --port 8766`.
 
-## Try it
+## Analyze a game screen
+
+Open **Analizza schermo** in the navigation, or http://127.0.0.1:8765/screen.
+
+1. Configure OpenAI as described below, using a model with image input and Structured Outputs.
+2. Click **Collega schermo** and choose a game window, browser tab or display in the browser picker.
+   Alternatively upload or paste a PNG, JPEG or WebP screenshot (up to 12 MB / 40 megapixels).
+3. Optionally crop the game area using percentages. **Ultimo fotogramma preparato** previews the
+   actual area sent. Supply a game name, rules, player side or goal if useful.
+4. Choose a response mode and the **Tempo massimo disponibile**, authorize image transmission and
+   click **Analizza adesso**. **Rapida** (default) gives one move and a short reason from the latest image.
+   **Dettagliata** adds visible facts, steps and alternatives, and can use three frames.
+5. For a shared screen, optionally enable **Analisi automatica**. **Interrompi** stops capture,
+   clears the local frame history and disables automatic analysis.
+
+The screen path has no fixed table layout or title allowlist: it asks the vision model about board,
+card, puzzle, strategy, adventure and action games. It is **not a universal game solver**. Advice
+depends on the model, image quality, visible rules and context. Unclear state, unknown turns or low
+model confidence suppress the move and request more context. This mode does not independently
+verify legal moves or apply the poker study room's budget constraints.
+
+### Capture and analysis timing
+
+- Capture locally **every 0.5 seconds**, keeping up to **3 distinct frames** from the last 30 s.
+- Automatic analysis starts when a changed frame is sampled, with **no fixed post-response pause**.
+  One request runs at a time. If images change while it runs, intermediate frames are not queued:
+  the next request uses the newest frame. **Rapida** sends only that frame, with compact JSON and
+  a 400-output-token limit (including any model reasoning); **Dettagliata** permits up to 1600 tokens.
+- The **decision window defaults to 5 seconds**, configurable to 2, 3, 5, 8, 15 or 30 s. This is a
+  freshness cutoff, **not an API latency guarantee**. Choose less than the time left to act in the
+  game. Client timing covers capture, upload and response; the server separately checks its own
+  elapsed time. The UI shows the measured duration of each attempt.
+- Identical normalized images skip repeat automatic calls. This is exact image comparison, not
+  semantic turn detection: animations, clocks or cursors can trigger calls and make results obsolete.
+  Crop them out or use a paused screenshot; continuously changing scenes may yield no usable advice.
+- Provider errors and exceeded deadlines stop automatic mode without retries. API attempts still
+  consume the shared call cap; this faster loop can reach that cap sooner.
+- Crop/context changes clear history and pause automatic mode. Revoking consent, ending sharing
+  or leaving the page stops further sends. A provider request already sent may finish and incur
+  a charge, but results for an obsolete source/context are discarded.
+- Results show their source timestamp. The UI re-captures before displaying a live result and
+  discards it if the image changed. Already-visible live advice is withdrawn on the next detected
+  change or when the original decision window expires. A still-image report does not expire after
+  display, but must still arrive within the request window. Fast action games need paused review;
+  remote model latency cannot guarantee reflex-speed decisions for every game.
+
+`OPENAI_SCREEN_MODEL` optionally selects a different model for this latency-sensitive path; blank
+uses `OPENAI_MODEL`. One model to benchmark is `gpt-4.1-mini`: OpenAI documents image input,
+Structured Outputs and low latency without a reasoning step in its
+[model reference](https://developers.openai.com/api/docs/models/gpt-4.1-mini). Model availability,
+actual latency and gameplay accuracy must be verified with your own project. A long-reasoning model
+may exhaust the compact output budget before returning JSON. Shorter outputs and a smaller model
+follow OpenAI's [latency guidance](https://developers.openai.com/api/docs/guides/latency-optimization);
+no paid request or gameplay latency benchmark has been run here.
+
+The preview uses the browser Screen Capture API with no audio. Each session requires the browser
+picker; on macOS the browser may also need Screen Recording permission. Desktop support varies.
+A browser cannot silently capture arbitrary windows, bypass protected/DRM surfaces, or capture a
+console/phone not already displayed on the computer. Fullscreen/minimized windows, background-tab
+throttling and OS restrictions may interrupt or slow capture. File upload is the fallback. See the
+[Screen Capture API documentation](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia).
+
+Frames are resized to at most 1280 px (Rapida) or 1600 px (Dettagliata) on the longest side and
+JPEG-encoded locally. Cropped images and context use the shared `OPENAI_MAX_CALLS` cap.
+The new screen path does not persist screenshots, prompts or results. `store: false` does not promise
+zero provider retention. Credentials stay server-side. No clicks, keys or bets are executed.
+
+## Try the poker study room
 
 1. With an empty archive, the app loads two **synthetic example hands**, with clearly marked synthetic stacks.
 2. Select a hand and move to a Hero decision. The study proposal, amount, legal action bounds, equity and budget update automatically.
@@ -53,7 +120,9 @@ crop/redact it yourself if needed. Images are not saved. All AI output needs hum
 `OPENAI_MAX_CALLS=20` caps attempted paid calls per server start across all AI features.
 Set it to `0` to disable outgoing calls. The counter resets at restart, is not a currency spending
 limit, and cannot account for other apps using the same key. Token usage and attempt counts
-are returned by `/api/status`. There are no automatic retries. Timeout is 50 seconds.
+are returned by `/api/status`. There are no automatic retries. Study calls use a 50-second socket
+timeout; screen calls use the selected decision window plus post-response elapsed-time checks.
+Socket timeouts are per blocking operation, not a hard guarantee that remote inference is canceled.
 
 OpenAI output explains assumptions and missing information. It does not invent a GTO solution.
 No API key is needed for imports, replay, profiles, budget checks or the local teaching baseline.
@@ -132,9 +201,10 @@ numeric PokerStars hand IDs; profiles are separated by unit, but not by stakes/t
 
 ## Scope and limitations
 
-This is an offline learning MVP. There is no live screen capture, folder watcher, PokerStars
-integration, overlay, input automation or betting execution. Screenshot reading is manual,
-not a two-second live loop. It does not connect to a ChatGPT browser session.
+The poker study room is an offline learning MVP. The separate screen assistant adds explicit browser
+capture and generic advice; it does not reconstruct a verified poker state or inherit the study room's
+legal-action/budget guarantees. There is no folder watcher, PokerStars client integration, overlay,
+input automation or betting execution. It does not connect to a ChatGPT browser session.
 
 The hand importer is deliberately conservative. It accepts a common English format;
 localized formats, Omaha, run-it-twice, bomb pots, cash-out and special blind structures are
@@ -169,7 +239,7 @@ Do not expose this development server to a public network.
 
 ```sh
 python3 -m unittest discover -s tests -v
-node --test tests/test_ui.cjs  # Optional development check: requires Node 18+
+node --test tests/test_ui.cjs tests/test_screen_ui.cjs  # Optional development check: requires Node 18+
 python3 server.py --no-browser
 ```
 
@@ -178,6 +248,8 @@ python3 server.py --no-browser
 - `decisions.py`: legal moves, commitment limits and transparent local baseline.
 - `archive.py`, `profiles.py`, `study.py`: persistence, earlier-hand evidence and validated model proposals.
 - `server.py`: local HTTP API, explicit OpenAI calls and fixed static assets.
+- `screen.py`, `prompts/screen*_system.txt`: fast/detailed multimodal analysis and deadline validation.
+- `static/screen.html`, `screen.js`, `screen.css`: capture, crop, frame history and analysis UI.
 - `static/`: accessible browser UI, plain HTML/CSS/JavaScript.
 - `examples/demo.txt`: two synthetic hands, including an uncalled returned bet.
 - `tests/test_core.py`: evaluator cross-checks, split pots, parser conservation and mocked AI boundaries.
@@ -187,12 +259,11 @@ Never commit `.env`, real hand histories or screenshots. Use `private/` for loca
 
 ## Project status
 
-Version 0.2.1 · local prototype. 54 Python tests pass, including automatic stack bounds,
-unknown balances, legacy settings migration, screenshot validation, rule bounds, loss limits, chronology,
-archive deduplication, changed-budget cache invalidation, simultaneous-request deduplication and HTTP flows.
-OpenAI request construction and response handling have mock coverage; a live API request
-requires a configured project and has not been validated as part of this initial build.
-Three JavaScript event-flow checks pass with a minimal DOM harness (no network calls), covering
-unverified-image gating, stale-field clearing, edit invalidation and optional-limit saving.
-JavaScript syntax is checked. A full browser/visual test could not be run in the build environment
-because a browser binary was unavailable. Please treat the interface as a first prototype.
+Version 0.3.0 · local prototype. Run the Python and JavaScript commands above for regression checks.
+Screen tests cover multimodal ordering, size/type/consent validation, uncertain-state abstention,
+malformed output, shared API limits, concurrent-request exclusion and authenticated HTTP routes.
+Browser-independent event tests cover capture timing, duplicate suppression, three-frame bounds,
+stale results, consent revocation, context changes, capture ending and provider errors.
+OpenAI requests and responses are tested with mocks; actual model recognition and advice have not
+been validated with a paid API request. Full browser/OS screen-sharing and visual QA remain manual
+checks: the build environment could not install its browser binary. No runtime dependencies were added.

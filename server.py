@@ -17,6 +17,7 @@ from history import parse_histories
 from archive import Archive, UNITS
 from decisions import cents
 from study import Study
+from screen import AnalysisExpired, analyze_screen, request_options
 
 ROOT = Path(__file__).resolve().parent
 TOKEN = secrets.token_urlsafe(32)
@@ -44,14 +45,20 @@ def load_config():
         for line in path.read_text().splitlines():
             if '=' in line and not line.lstrip().startswith('#'):
                 key, value = line.split('=', 1)
-                if key.strip() in ('OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_MAX_CALLS'):
+                if key.strip() in ('OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_SCREEN_MODEL', 'OPENAI_MAX_CALLS'):
                     os.environ.setdefault(key.strip(), value.strip().strip('"\''))
 
 
 def config():
     return {'ai_ready': bool(os.getenv('OPENAI_API_KEY') and os.getenv('OPENAI_MODEL')),
-            'model': os.getenv('OPENAI_MODEL', ''), 'version': '0.2.1',
+            'screen_ai_ready': bool(os.getenv('OPENAI_API_KEY') and screen_model()),
+            'screen_model': screen_model(),
+            'model': os.getenv('OPENAI_MODEL', ''), 'version': '0.3.0',
             'api_usage': dict(API_USAGE), 'api_call_limit': call_limit(), 'default_style':'decisive_positive_ev'}
+
+
+def screen_model():
+    return os.getenv('OPENAI_SCREEN_MODEL', '').strip() or os.getenv('OPENAI_MODEL', '')
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -59,35 +66,36 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def response_text(instructions, content, schema=None):
-    if not config()['ai_ready']:
+def response_text(instructions, content, schema=None, *, model=None, max_output_tokens=1600, timeout=50):
+    model = model or os.getenv('OPENAI_MODEL', '')
+    if not os.getenv('OPENAI_API_KEY') or not model:
         raise ValueError('Configura OPENAI_API_KEY e OPENAI_MODEL nel file .env e riavvia RiverLens.')
-    payload = {'model': os.environ['OPENAI_MODEL'], 'instructions': instructions,
+    payload = {'model': model, 'instructions': instructions,
                'input': [{'role': 'user', 'content': content}], 'store': False,
-               'max_output_tokens': 1600}
+               'max_output_tokens': max_output_tokens}
     if schema:
         payload['text'] = {'format': {'type':'json_schema', 'name':'riverlens_decision', 'strict':True, 'schema':schema}}
     with API_LOCK:
         if API_USAGE['attempts'] >= call_limit():
-            raise ValueError('Limite di chiamate API per questo avvio raggiunto. Resta disponibile la proposta locale.')
+            raise ValueError('Limite di chiamate API per questo avvio raggiunto. Nessuna nuova analisi AI disponibile.')
         API_USAGE['attempts'] += 1
     request = urllib.request.Request('https://api.openai.com/v1/responses',
         data=json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY'],
                                                    'Content-Type': 'application/json'}, method='POST')
     try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=50) as reply:
+        with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as reply:
             result = json.load(reply)
     except urllib.error.HTTPError as error:
         raise ValueError(f'OpenAI ha risposto HTTP {error.code}. Verifica modello, chiave, credito e limiti API.') from None
     except (urllib.error.URLError, TimeoutError):
-        raise ValueError('OpenAI non raggiungibile o timeout. Il motore locale rimane disponibile.') from None
+        raise ValueError('OpenAI non raggiungibile o timeout. Nessuna nuova analisi AI disponibile.') from None
     if result.get('status') != 'completed':
         raise ValueError('Risposta OpenAI incompleta. Riprova con un modello adatto a risposte brevi.')
     with API_LOCK:
         for field in ('input_tokens','output_tokens'):
             API_USAGE[field] += int(result.get('usage',{}).get(field,0))
     if any(part.get('type')=='refusal' for item in result.get('output',[]) if item.get('type')=='message' for part in item.get('content',[])):
-        raise ValueError('Il modello non ha fornito una proposta. Rimane visibile il riferimento locale.')
+        raise ValueError('Il modello non ha fornito una proposta AI.')
     text = '\n'.join(part.get('text', '') for item in result.get('output', [])
                      if item.get('type') == 'message' for part in item.get('content', [])
                      if part.get('type') == 'output_text')
@@ -162,6 +170,16 @@ def recommend(data):
                            model=os.getenv('OPENAI_MODEL',''), prompt=prompt('decision'))
 
 
+def screen_analysis(data):
+    mode, deadline_ms = request_options(data)
+    model = screen_model()
+    def invoke(instructions, content, schema):
+        return response_text(instructions, content, schema, model=model,
+                             max_output_tokens=400 if mode == 'fast' else 1600,
+                             timeout=deadline_ms / 1000)
+    return analyze_screen(data, invoke, model)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # Do not log hand histories, screenshots, or model payloads.
@@ -177,7 +195,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
-        self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -191,6 +209,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.host_ok():
             return self.send(403, {'error': 'Host non autorizzato.'})
         routes = {'/': ('index.html', 'text/html; charset=utf-8'),
+                  '/screen': ('screen.html', 'text/html; charset=utf-8'),
+                  '/screen.js': ('screen.js', 'text/javascript; charset=utf-8'),
+                  '/screen.css': ('screen.css', 'text/css; charset=utf-8'),
                   '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
                   '/style.css': ('style.css', 'text/css; charset=utf-8')}
         if self.path == '/api/status':
@@ -229,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/session':
                 return self.send(200, {'budget': ARCHIVE.save_budget(data)})
             methods = {'/api/analyze': lambda x: analyze(x), '/api/explain': explain, '/api/vision': vision,
-                       '/api/recommend': recommend}
+                       '/api/recommend': recommend, '/api/screen/analyze': screen_analysis}
             if self.path not in methods:
                 return self.send(404, {'error': 'Non trovato.'})
             if not WORK.acquire(blocking=False):
@@ -238,6 +259,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, methods[self.path](data))
             finally:
                 WORK.release()
+        except AnalysisExpired as error:
+            self.send(408, {'error': str(error), 'code': 'deadline_exceeded'})
         except (ValueError, TypeError, TimeoutError, UnicodeError) as error:
             self.send(400, {'error': str(error)[:300]})
         except Exception:
@@ -246,7 +269,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     load_config()
-    parser = argparse.ArgumentParser(description='RiverLens · offline poker study')
+    parser = argparse.ArgumentParser(description='RiverLens · screen analysis and poker study')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--no-browser', action='store_true')
     args = parser.parse_args()
@@ -255,7 +278,7 @@ def main():
     except OSError as error:
         raise SystemExit(f'Impossibile avviare RiverLens: {error}. Prova --port 8766.') from None
     url = f'http://127.0.0.1:{server.server_port}'
-    print(f'RiverLens 0.2.1 · {url}\nCtrl+C per terminare.', flush=True)
+    print(f'RiverLens 0.3.0 · {url}\nAnalizza schermo: {url}/screen\nCtrl+C per terminare.', flush=True)
     if not args.no_browser:
         webbrowser.open(url)
     try:

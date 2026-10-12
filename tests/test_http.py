@@ -65,6 +65,37 @@ class HttpTests(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError) as error:self.request(path,data,headers)
                 self.assertEqual(error.exception.code,status)
 
+    def test_screen_assets_and_analysis_route(self):
+        from test_screen import request_data, answer_data
+        with self.request('/screen') as response:
+            html = response.read().decode()
+            self.assertIn(server.TOKEN, html)
+            self.assertIn('Analizza adesso', html)
+        for path, mime in [('/screen.js', 'text/javascript'), ('/screen.css', 'text/css')]:
+            with self.request(path) as response:
+                self.assertIn(mime, response.headers['Content-Type'])
+        with patch('server.response_text', return_value=json.dumps(answer_data())) as call:
+            with self.request('/api/screen/analyze', request_data()) as response:
+                self.assertEqual(json.load(response)['status'], 'ready')
+            call.assert_called_once()
+        for change, headers, status in [({'consent':False},{},400), ({},{'X-RiverLens-Token':'wrong'},403),
+                                       ({},{'Origin':'https://example.com'},403)]:
+            with patch('server.response_text') as call:
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    self.request('/api/screen/analyze', {**request_data(), **change}, headers)
+                self.assertEqual(error.exception.code, status)
+                call.assert_not_called()
+
+    def test_late_screen_analysis_returns_expired_status_without_a_move(self):
+        from test_screen import request_data
+        with patch('server.screen_analysis', side_effect=server.AnalysisExpired('Troppo tardi.')):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request('/api/screen/analyze', request_data())
+            self.assertEqual(error.exception.code, 408)
+            body = json.load(error.exception)
+            self.assertEqual(body['code'], 'deadline_exceeded')
+            self.assertNotIn('next_move', body)
+
     def test_budget_and_automatic_recommendation_flow(self):
         with self.request('/api/import',{'text':(server.ROOT/'examples'/'demo.txt').read_text()}) as reply:
             hand=json.load(reply)['hands'][0]
