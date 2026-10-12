@@ -1,30 +1,39 @@
 """Local archive. No cloud storage; chronological reads exclude future hands."""
 import hashlib
 import json
+from decimal import Decimal
 from pathlib import Path
 import sqlite3
 from contextlib import contextmanager
 from engine import number
 
 UNITS = ('chips', 'USD', 'EUR', 'GBP', 'CHF')
-DEMO_BUDGET = {'bankroll': 1000, 'stop_loss': 200, 'max_hand_loss': 100,
-               'unit': 'chips', 'start_hand_id': '0', 'demo': True}
 
 
 def validate_budget(value):
     if not isinstance(value, dict):
         raise ValueError('Configurazione budget non valida.')
-    result = {key: round(number(value.get(key), key), 2) for key in ('bankroll', 'stop_loss', 'max_hand_loss')}
-    if min(result.values()) <= 0:
-        raise ValueError('Bankroll, stop loss e limite per mano devono essere maggiori di zero.')
-    if result['max_hand_loss'] > result['stop_loss'] or result['stop_loss'] > result['bankroll']:
-        raise ValueError('Il limite per mano deve essere ≤ stop loss ≤ bankroll.')
-    if value.get('unit') not in UNITS:
-        raise ValueError('Unità budget non valida.')
+    if set(value) - {'stop_loss', 'max_hand_loss', 'unit', 'start_hand_id'}:
+        raise ValueError('Configura solo limiti personali: stack e saldo non si impostano qui.')
+    result = {}
+    for key in ('stop_loss', 'max_hand_loss'):
+        raw = value.get(key)
+        if raw is None or raw == '':
+            result[key] = None
+            continue
+        amount = number(raw, key)
+        scaled = Decimal(str(amount)) * 100
+        if amount <= 0 or scaled != scaled.to_integral_value():
+            raise ValueError('I limiti devono essere positivi, con al massimo due decimali, oppure vuoti.')
+        result[key] = amount
+    enabled = any(x is not None for x in result.values())
+    unit = value.get('unit')
+    if enabled and unit not in UNITS:
+        raise ValueError('L’unità dei limiti deve corrispondere al tavolo.')
     start = str(value.get('start_hand_id', '0'))
     if not start.isdigit() or len(start) > 30:
         raise ValueError('Identificativo della prima mano non valido.')
-    return {**result, 'unit': value['unit'], 'start_hand_id': start, 'demo': False}
+    return {**result, 'unit': unit if enabled else None, 'start_hand_id': start}
 
 
 class Archive:
@@ -67,7 +76,13 @@ class Archive:
     def budget(self):
         with self.connect() as db:
             row = db.execute("SELECT body FROM settings WHERE key='budget'").fetchone()
-        return json.loads(row[0]) if row else None
+        if not row:
+            return None
+        value = json.loads(row[0])
+        # v0.2 required a manually entered bankroll. Retain chosen loss limits only.
+        value.pop('bankroll', None)
+        value.pop('demo', None)
+        return validate_budget(value)
 
     def save_budget(self, data):
         budget = validate_budget(data)

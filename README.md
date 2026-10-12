@@ -25,12 +25,12 @@ If the port is occupied: `python3 server.py --port 8766`.
 
 ## Try it
 
-1. With an empty archive, the app loads two **synthetic example hands**, with a clearly marked fictional chip budget.
+1. With an empty archive, the app loads two **synthetic example hands**, with clearly marked synthetic stacks.
 2. Select a hand and move to a Hero decision. The study proposal, amount, legal action bounds, equity and budget update automatically.
 3. Import completed English PokerStars `.txt` histories. Hands are archived locally and duplicate imports do not inflate statistics.
-4. Set **Budget → Configura** once for imported hands. Define the initial bankroll, unit, session stop loss, maximum loss per hand and optionally the first session hand ID.
+4. The available table stack and unit come from the selected snapshot automatically: **no bankroll setup**. Add optional stop-loss or per-hand limits through **Limiti facoltativi**, only if desired.
 5. Optionally configure OpenAI, then enable **AI automatica** once per browser session. New study decisions are sent automatically; repeated identical decisions use a cache.
-6. Use **Laboratorio** for explicit simulated scenarios, or manually transcribe a saved screenshot and verify the fields.
+6. Use **Laboratorio** for explicit simulated scenarios, or transcribe a saved screenshot. Unknown fields stay empty; verify the transcription before enabling its simulation.
 
 In the card notation, `Ah Qh` means ace and queen of hearts. Suits: `c` clubs, `d` diamonds,
 `h` hearts, `s` spades. Ten = `T`. The current pot **includes the opposing bet**.
@@ -83,23 +83,44 @@ Prompts are versioned in `prompts/decision_system.txt`, `prompts/explanation_sys
 - Shows a Monte Carlo sampling margin and the **conditional** call threshold/EV.
 - Optionally transcribes an archived screenshot, then requires manual inspection before calculation.
 - Derives check/fold/call/bet/raise/all-in availability, full-raise bounds and reopening rights from the action sequence.
-- Applies stack, remaining bankroll, session stop loss and per-hand loss limits before an AI request.
-- Persists imported hands and budget in `private/riverlens.sqlite3` using Python's built-in SQLite.
+- Reads remaining stack from each archived snapshot and applies optional personal loss limits before an AI request.
+- Keeps account balance separate: histories do not establish it; image transcription extracts it only when explicitly visible.
+- Persists imported hands and optional limits in `private/riverlens.sqlite3` using Python's built-in SQLite.
 - Computes observed VPIP, PFR, postflop aggression and fold-to-bet frequencies from earlier completed hands only.
 
 ## Budget and opponent evidence
 
-The initial bankroll is the amount **before the first included hand**. The start-hand field
-defaults to `0` (all imported hands). Session profit/loss includes only earlier completed hands
-with the same Hero and unit and IDs at or after the start ID. Never mix currencies: no conversion
-is performed. No account connection exists, so deposits, withdrawals, missing hands and other
-sessions are not discovered automatically.
+The budget available for a table action is the **remaining Hero stack in that exact replay
+snapshot**. It updates as the replay advances and needs no manual setting. The server ignores
+stack/balance overrides supplied alongside an archived-hand request. Committed chips have
+already left the stack: they are not subtracted twice. Earlier winnings are not added again.
 
-Additional commitment is limited to the minimum of remaining stack, bankroll minus chips
-already committed in this hand, remaining stop-loss room including current-hand commitment,
-and remaining per-hand loss allowance. These are local study constraints, not controls on a real
-gambling account. Demo limits are fictional and separate. Simulations use the configured budget
-or a clearly marked fictional default, with zero assumed prior session profit/loss.
+Table stack and account balance are different. A hand history does not establish account
+balance, deposits, withdrawals or available funds outside that table. RiverLens displays the
+account balance as unknown in replay. The archived-image reader can transcribe an explicitly
+labeled visible balance, with its own currency; it is displayed separately and never added to
+stack or used to infer total bankroll. Missing values stay `null`, never zero or a demo default.
+
+**Limiti facoltativi** lets you set either or both of a session stop loss and a maximum loss
+per hand. Empty fields mean no personal limit; **Rimuovi limiti** restores stack-only bounds.
+The start-hand field defaults to `0` (all prior archived hands). Historical profit/loss includes
+only earlier completed hands with the same Hero/unit and IDs at or after this optional start.
+It is an archive subtotal, not a complete account statement. When a stop loss is active, points
+before its selected start are blocked until the setting is changed. Active limits in a different
+unit also block proposals; no currency conversion occurs.
+
+Additional commitment is capped by remaining stack and, when configured, stop loss + earlier
+archived net result − current-hand investment, and per-hand limit − current-hand investment.
+For example: stack 194, investment 6, per-hand limit 10 → at most 4 additional chips. Without
+that limit, all 194 remain available; there is no second subtraction of the 6. Free actions remain
+possible when the allowance is zero. These are local study constraints, not controls on an account.
+
+Synthetic demos use their own recorded stacks and ignore personal limits. Simulations use an
+explicit scenario stack and optional saved limits, with zero assumed prior profit/loss. A missing
+scenario stack blocks proposals and AI calls. After image transcription, missing fields are cleared
+and automatic proposals wait for inspection and confirmation; changing a field requires confirming
+again. Values manually filled into that lab remain simulation assumptions, not observed client data.
+Upgrading from v0.2 preserves chosen loss limits but discards the old manually configured bankroll.
 
 Profiles describe **observed actions**, never a person's real-world personality. VPIP/PFR use
 hands dealt as the denominator. Postflop aggression frequency is (bets + raises)/(bets + raises
@@ -148,6 +169,7 @@ Do not expose this development server to a public network.
 
 ```sh
 python3 -m unittest discover -s tests -v
+node --test tests/test_ui.cjs  # Optional development check: requires Node 18+
 python3 server.py --no-browser
 ```
 
@@ -165,9 +187,12 @@ Never commit `.env`, real hand histories or screenshots. Use `private/` for loca
 
 ## Project status
 
-Version 0.2.0 · local prototype. 43 tests pass, including rule bounds, loss limits, chronology,
+Version 0.2.1 · local prototype. 54 Python tests pass, including automatic stack bounds,
+unknown balances, legacy settings migration, screenshot validation, rule bounds, loss limits, chronology,
 archive deduplication, changed-budget cache invalidation, simultaneous-request deduplication and HTTP flows.
 OpenAI request construction and response handling have mock coverage; a live API request
 requires a configured project and has not been validated as part of this initial build.
+Three JavaScript event-flow checks pass with a minimal DOM harness (no network calls), covering
+unverified-image gating, stale-field clearing, edit invalidation and optional-limit saving.
 JavaScript syntax is checked. A full browser/visual test could not be run in the build environment
 because a browser binary was unavailable. Please treat the interface as a first prototype.

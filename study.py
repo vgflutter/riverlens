@@ -4,7 +4,7 @@ import copy
 import hashlib
 import json
 import threading
-from archive import DEMO_BUDGET
+from archive import UNITS
 from decisions import assess, cents
 from engine import cards, number
 from profiles import profiles
@@ -14,16 +14,22 @@ def simulation_state(data):
     if not isinstance(data, dict):
         raise ValueError('Scenario non valido.')
     state = {key:cents(data.get(key, default), key)/100 for key,default in
-             [('stack',200),('hero_bet',0),('current_bet',0),('big_blind',2),('min_raise_increment',2),('invested',0),('pot',0)]}
+             [('hero_bet',0),('current_bet',0),('big_blind',2),('min_raise_increment',2),('invested',0),('pot',0)]}
+    # Missing stack is unknown, never the previous scenario's 200-chip default.
+    state['stack'] = None if data.get('stack') in (None, '') else cents(data['stack'], 'Stack')/100
+    unit = data.get('unit', 'chips')
+    if unit not in UNITS:
+        raise ValueError('Unità dello scenario non valida.')
     state.update({'hero':cards(data.get('hero',[])), 'board':cards(data.get('board',[])),
-                  'villain':cards(data.get('villain',[])), 'unit':'chips', 'hero_turn':True,
+                  'villain':cards(data.get('villain',[])), 'unit':unit, 'hero_turn':True,
+                  'budget_source':'simulation',
                   'raise_reopened':data.get('raise_reopened',True), 'opponent_can_respond':True})
     if 'min_raise_increment' not in data:
         state['min_raise_increment']=max(state['big_blind'],state['current_bet'])
     opponents=number(data.get('opponents',1),'Avversari',8)
     if opponents<1 or not opponents.is_integer():
         raise ValueError('Numero di avversari non valido.')
-    if state['current_bet']-state['hero_bet']>state['stack']:
+    if state['stack'] is not None and state['current_bet']-state['hero_bet']>state['stack']:
         state['complex_pot']=True
     state['opponents']=int(opponents)
     state['street']={0:'PREFLOP',3:'FLOP',4:'TURN',5:'RIVER'}.get(len(state['board']),'UNKNOWN')
@@ -41,7 +47,7 @@ def replay_state(hand, index):
     last_aggressor=next((s['actor'] for s in reversed(previous) if s.get('action') in ('bet','raise')),None)
     state={'hero':snap['hole'],'board':snap['board'],'pot':snap['pot'],'stack':hero['stack'],
            'hero_bet':hero['bet'],'invested':hero['invested'],'opponents':snap['opponents'],
-           'unit':hand['unit'],'hero_turn':snap['hero_decision'],'folded':hero['folded'],
+           'unit':hand['unit'],'budget_source':'hand_history','hero_turn':snap['hero_decision'],'folded':hero['folded'],
            'current_bet':snap['current_bet'],'big_blind':snap['big_blind'],
            'min_raise_increment':snap['min_raise_increment'],'raise_reopened':snap['raise_reopened'],
            'complex_pot':snap['complex_pot'],'ambiguous_bet':snap['ambiguous_bet'],
@@ -117,7 +123,7 @@ class Study:
             raise ValueError('Sorgente ammessa: demo, archive o simulation.')
         if source=='simulation':
             state=simulation_state(data.get('scenario',{}))
-            config=self.archive.budget() or DEMO_BUDGET
+            config=self.archive.budget()
             past,observed,names,net=[],[],[],0
         else:
             all_hands=self.demo_loader() if source=='demo' else self.archive.hands()
@@ -126,11 +132,12 @@ class Study:
                 raise ValueError('Mano conclusa non presente nell’archivio selezionato.')
             state,observed,names=replay_state(hand,data.get('step'))
             past=[h for h in all_hands if int(h['id'])<int(hand['id']) and h['unit']==hand['unit']]
-            config=DEMO_BUDGET if source=='demo' else self.archive.budget()
+            config=None if source=='demo' else self.archive.budget()
+            if source=='demo':state['budget_source']='demo_hand_history'
             start=int(config.get('start_hand_id','0')) if config else 0
             net=round(sum(h['hero_net'] for h in past if h['hero']==hand['hero'] and int(h['id'])>=start),2)
-            if config and int(hand['id'])<start:
-                config=None
+            if config and config.get('stop_loss') is not None and int(hand['id'])<start:
+                state['before_session_start']=True
         observed_profiles=profiles(past,names)
         report=assess(state,config,net,observed_profiles)
         report.update({'source':source,'style':'decisive_positive_ev','past_hands':len(past),

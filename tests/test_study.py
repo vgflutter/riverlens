@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from archive import Archive, DEMO_BUDGET, validate_budget
+from archive import Archive, validate_budget
 from decisions import legal_actions, budget_status, candidates, assess
 from history import parse_histories
 from profiles import profiles
@@ -16,6 +16,7 @@ from study import Study, replay_state, simulation_state, validate_answer
 import server
 
 DEMO=(Path(__file__).resolve().parents[1]/'examples/demo.txt').read_text()
+LIMITS={'stop_loss':200,'max_hand_loss':100,'unit':'chips','start_hand_id':'0'}
 
 
 def sample_state(**changes):
@@ -69,28 +70,70 @@ class ActionTests(unittest.TestCase):
 
 
 class BudgetTests(unittest.TestCase):
+    def test_auto_stack_does_not_double_count_bets_or_history(self):
+        for config in (None, validate_budget({}), validate_budget({'unit':'EUR'})):
+            for net in (-1000, 0, 500):
+                b=budget_status(config,sample_state(invested=6),net)
+                self.assertEqual(b['allowed_add'],194)
+                self.assertEqual(b['observed_stack'],194)
+                self.assertIsNone(b['account_balance'])
+                self.assertFalse(b['manual_limits'])
+                self.assertFalse(b['unavailable'])
+
+    def test_unknown_stack_never_uses_fallback_or_calls_ai(self):
+        for raw in (None,''):
+            state=simulation_state({'hero':'Ah Qh','stack':raw})
+            r=assess(state,None,0,[])
+            self.assertIsNone(r['recommendation']['candidate_id'])
+            self.assertFalse(r['budget']['configured'])
+            self.assertTrue(r['blocked'])
+            self.assertEqual(r['candidates'],[])
+        self.assertIsNone(simulation_state({'hero':'Ah Qh'})['stack'])
+
+    def test_optional_limits_are_independent_and_stack_is_hard_cap(self):
+        hand_only=validate_budget({'max_hand_loss':20,'unit':'chips'})
+        self.assertEqual(budget_status(hand_only,sample_state())['allowed_add'],14)
+        stop_only=validate_budget({'stop_loss':200,'unit':'chips'})
+        self.assertEqual(budget_status(stop_only,sample_state(),net=-180)['allowed_add'],14)
+        self.assertEqual(budget_status(stop_only,sample_state(),net=1000)['allowed_add'],194)
+        self.assertIsNone(validate_budget({'stop_loss':'','max_hand_loss':None})['unit'])
+
+    def test_stack_zero_is_observed_not_unknown(self):
+        b=budget_status(None,sample_state(stack=0))
+        self.assertTrue(b['configured'])
+        self.assertEqual(b['observed_stack'],0)
+        self.assertFalse(b['unavailable'])
+        self.assertEqual(b['allowed_add'],0)
+
+    def test_balance_cannot_be_manually_configured(self):
+        for field in ('bankroll','stack','account_balance'):
+            with self.assertRaises(ValueError):validate_budget({field:1000})
+        for value in (0,-1,False,float('nan'),float('inf'),2.001):
+            with self.assertRaises(ValueError):validate_budget({'stop_loss':value,'unit':'chips'})
+
     def test_invested_and_previous_losses_are_counted(self):
-        b=budget_status(DEMO_BUDGET,sample_state(invested=30),net=-160)
+        b=budget_status(LIMITS,sample_state(invested=30),net=-160)
         self.assertEqual(b['allowed_add'],10)
-        self.assertEqual(b['bankroll_before_hand'],840)
+        self.assertEqual(b['observed_stack'],194)
+        self.assertIsNone(b['account_balance'])
 
     def test_stop_and_hand_limit(self):
-        b=budget_status(DEMO_BUDGET,sample_state(invested=100))
+        b=budget_status(LIMITS,sample_state(invested=100))
         self.assertEqual(b['allowed_add'],0)
-        b=budget_status(DEMO_BUDGET,sample_state(),net=-200)
+        b=budget_status(LIMITS,sample_state(),net=-200)
         self.assertTrue(b['stop_session'])
-        r=assess(sample_state(),DEMO_BUDGET,-200,[])
+        r=assess(sample_state(),LIMITS,-200,[])
         self.assertEqual(r['recommendation']['candidate_id'],'fold:0')
 
-    def test_no_budget_or_wrong_unit_blocks_proposal(self):
-        for config in (None,{**DEMO_BUDGET,'unit':'EUR'}):
-            r=assess(sample_state(),config,0,[])
-            self.assertIsNone(r['recommendation']['candidate_id'])
-            self.assertTrue(r['blocked'])
+    def test_wrong_unit_blocks_proposal(self):
+        r=assess(sample_state(),{**LIMITS,'unit':'EUR'},0,[])
+        self.assertIsNone(r['recommendation']['candidate_id'])
+        self.assertTrue(r['blocked'])
+        self.assertEqual(r['budget']['unit'],'chips')
 
     def test_invalid_limits(self):
-        with self.assertRaises(ValueError):validate_budget({**DEMO_BUDGET,'stop_loss':2000})
-        with self.assertRaises(ValueError):validate_budget({**DEMO_BUDGET,'max_hand_loss':0})
+        with self.assertRaises(ValueError):validate_budget({**LIMITS,'stop_loss':2.001})
+        with self.assertRaises(ValueError):validate_budget({**LIMITS,'max_hand_loss':0})
 
 
 class ArchiveStudyTests(unittest.TestCase):
@@ -112,8 +155,39 @@ class ArchiveStudyTests(unittest.TestCase):
         extra=copy.deepcopy(self.hands[0]);extra['id']='99999'
         with self.assertRaises(ValueError):self.archive.import_hands([extra,changed])
         self.assertEqual(len(self.archive.hands()),2)
-        self.archive.save_budget(DEMO_BUDGET)
-        self.assertEqual(Archive(self.path).budget()['bankroll'],1000)
+        self.archive.save_budget(LIMITS)
+        self.assertEqual(Archive(self.path).budget()['stop_loss'],200)
+        self.assertNotIn('bankroll',Archive(self.path).budget())
+
+    def test_old_bankroll_migrates_to_limits_without_changing_stack(self):
+        with self.archive.connect() as db:
+            db.execute("INSERT INTO settings VALUES ('budget',?)",(json.dumps({**LIMITS,'bankroll':1,'demo':False}),))
+        loaded=Archive(self.path).budget()
+        self.assertNotIn('bankroll',loaded)
+        b=budget_status(loaded,sample_state())
+        self.assertEqual(b['observed_stack'],194)
+        self.assertEqual(b['allowed_add'],94)
+
+    def test_replay_stack_changes_with_each_snapshot_and_ignores_client_override(self):
+        self.archive.import_hands(self.hands)
+        for index,snapshot in enumerate(self.hands[0]['snapshots']):
+            hero=next(p for p in snapshot['players'] if p['name']==self.hands[0]['hero'])
+            report,_=self.study.prepare({**self.request,'source':'archive','step':index,
+                                        'stack':999999,'account_balance':999999})
+            self.assertEqual(report['budget']['observed_stack'],hero['stack'])
+            self.assertEqual(report['budget']['allowed_add'],hero['stack'])
+            self.assertIsNone(report['budget']['account_balance'])
+
+    def test_missing_stack_skips_paid_call_and_simulation_provenance_is_explicit(self):
+        invoke=MagicMock()
+        report=self.study.recommend({'source':'simulation','scenario':{'hero':'Ah Qh'},
+                                     'use_ai':True,'consent':True},invoke)
+        invoke.assert_not_called()
+        self.assertEqual(report['ai_status'],'skipped')
+        state=simulation_state({'hero':'Ah Qh','stack':12,'unit':'EUR','account_balance':1000,'budget_source':'hand_history'})
+        self.assertEqual(state['budget_source'],'simulation')
+        self.assertEqual(budget_status(None,state)['unit'],'EUR')
+        self.assertIsNone(budget_status(None,state)['account_balance'])
 
     def test_previous_hands_only_and_no_future_leak(self):
         report,payload=self.study.prepare(self.request)
@@ -140,13 +214,18 @@ class ArchiveStudyTests(unittest.TestCase):
         self.assertEqual(p['fold_to_bet'],0)
         self.assertEqual(p['fold_opportunities'],1)
 
-    def test_archived_budget_required_and_session_start(self):
+    def test_archived_stack_automatic_and_optional_session_start(self):
         self.archive.import_hands(self.hands)
         req={**self.request,'source':'archive'}
-        self.assertIsNone(self.study.recommend(req)['selected_action'])
-        self.archive.save_budget(DEMO_BUDGET)
+        automatic=self.study.recommend(req)
+        self.assertIsNotNone(automatic['selected_action'])
+        self.assertEqual(automatic['budget']['observed_stack'],194)
+        self.assertEqual(automatic['budget']['allowed_add'],194)
+        self.assertEqual(automatic['budget']['source'],'hand_history')
+        self.assertIsNone(automatic['budget']['account_balance'])
+        self.archive.save_budget(LIMITS)
         self.assertIsNotNone(self.study.recommend(req)['selected_action'])
-        self.archive.save_budget({**DEMO_BUDGET,'start_hand_id':'100002'})
+        self.archive.save_budget({**LIMITS,'start_hand_id':'100002'})
         self.assertIsNone(self.study.recommend(req)['selected_action'])
 
     def test_ai_response_validated_cached_and_budget_keyed(self):
@@ -174,11 +253,11 @@ class ArchiveStudyTests(unittest.TestCase):
 
     def test_changed_budget_invalidates_cached_move(self):
         self.archive.import_hands(self.hands)
-        self.archive.save_budget(DEMO_BUDGET)
+        self.archive.save_budget(LIMITS)
         req={**self.request,'source':'archive','use_ai':True,'consent':True}
         def ai(*args):return {'candidate_id':'call:800','confidence':'low','rationale':'Call di studio.', 'assumptions':[],'alternatives':[]}
         self.assertEqual(self.study.recommend(req,ai)['ai_status'],'completed')
-        self.archive.save_budget({**DEMO_BUDGET,'max_hand_loss':10})
+        self.archive.save_budget({**LIMITS,'max_hand_loss':10})
         result=self.study.recommend(req,ai)
         self.assertEqual(result['budget']['allowed_add'],4)
         self.assertEqual(result['ai_status'],'fallback')
@@ -204,7 +283,7 @@ class ArchiveStudyTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.study.prepare({'source':'live'})
         state=simulation_state({'hero':'Ah Qh','board':'Jh Th 2c','pot':20,'current_bet':8,'stack':5})
         self.assertTrue(state['complex_pot'])
-        self.assertIsNone(assess(state,DEMO_BUDGET,0,[])['recommendation']['candidate_id'])
+        self.assertIsNone(assess(state,LIMITS,0,[])['recommendation']['candidate_id'])
 
 
 class RaiseHistoryTests(unittest.TestCase):

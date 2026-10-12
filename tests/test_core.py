@@ -120,6 +120,36 @@ class AiBoundaryTests(unittest.TestCase):
     def test_vision_transcription(self,mock):
         result=server.vision({'consent':True,'archived':True,'image':'data:image/png;base64,YQ=='})
         self.assertEqual(result['hero'],['Ah','Kd'])
+        self.assertIsNone(result['stack'])
+        self.assertIsNone(result['account_balance'])
+        self.assertIsNone(result['unit'])
+
+    @patch('server.response_text')
+    def test_vision_preserves_observed_stack_separate_from_account(self,mock):
+        mock.return_value=json.dumps({'hero':['Ah','Kd'],'stack':12.50,'unit':'EUR',
+                                      'account_balance':230,'account_unit':'USD','opponents':2})
+        result=server.vision({'consent':True,'archived':True,'image':'data:image/png;base64,YQ=='})
+        self.assertEqual(result['stack'],12.50)
+        self.assertEqual(result['account_balance'],230)
+        self.assertEqual(result['unit'],'EUR')
+        self.assertEqual(result['account_unit'],'USD')
+        self.assertIsNone(result['invested'])
+
+    @patch('server.response_text')
+    def test_vision_does_not_infer_wallet_and_preserves_zero(self,mock):
+        for stack in (0,200):
+            mock.return_value=json.dumps({'hero':['Ah','Kd'],'stack':stack,'unit':'chips'})
+            result=server.vision({'consent':True,'archived':True,'image':'data:image/png;base64,YQ=='})
+            self.assertEqual(result['stack'],stack)
+            self.assertIsNone(result['account_balance'])
+
+    @patch('server.response_text')
+    def test_vision_rejects_ambiguous_amounts_and_units(self,mock):
+        for field,value in [('stack',True),('stack',-1),('stack',1.234),('account_balance',float('inf')),
+                            ('unit','EUR/USD'),('opponents',1.5),('raise_reopened','true')]:
+            mock.return_value=json.dumps({field:value})
+            with self.subTest(field=field,value=value), self.assertRaises(ValueError):
+                server.vision({'consent':True,'archived':True,'image':'data:image/png;base64,YQ=='})
 
     @patch('server.response_text',return_value='{"hero":["Ah","Ah"],"board":[]}')
     def test_vision_rejects_duplicates(self,mock):

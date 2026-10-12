@@ -69,12 +69,21 @@ class HttpTests(unittest.TestCase):
         with self.request('/api/import',{'text':(server.ROOT/'examples'/'demo.txt').read_text()}) as reply:
             hand=json.load(reply)['hands'][0]
         step=next(i for i,s in enumerate(hand['snapshots']) if s['hero_decision'] and s['street']=='FLOP' and s['call'])
-        with self.request('/api/session',{'bankroll':1000,'stop_loss':200,'max_hand_loss':100,'unit':'chips'}) as reply:
-            self.assertEqual(json.load(reply)['budget']['bankroll'],1000)
         with self.request('/api/recommend',{'source':'archive','hand_id':hand['id'],'step':step}) as reply:
             report=json.load(reply)
             self.assertIsNotNone(report['selected_action'])
+            self.assertEqual(report['budget']['observed_stack'],194)
+            self.assertEqual(report['budget']['allowed_add'],194)
+            self.assertIsNone(report['budget']['account_balance'])
             self.assertLessEqual(report['selected_action']['amount_add'],report['budget']['allowed_add'])
+        with self.request('/api/session',{'max_hand_loss':10,'unit':'chips'}) as reply:
+            self.assertEqual(json.load(reply)['budget']['max_hand_loss'],10)
+        with self.request('/api/recommend',{'source':'archive','hand_id':hand['id'],'step':step}) as reply:
+            self.assertEqual(json.load(reply)['budget']['allowed_add'],4)
+        with self.request('/api/session',{}) as reply:
+            self.assertIsNone(json.load(reply)['budget']['max_hand_loss'])
+        with self.request('/api/recommend',{'source':'archive','hand_id':hand['id'],'step':step}) as reply:
+            self.assertEqual(json.load(reply)['budget']['allowed_add'],194)
         with self.request('/api/archive') as reply:
             self.assertEqual(len(json.load(reply)['hands']),2)
 

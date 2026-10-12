@@ -14,7 +14,8 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from engine import analyze, cards
 from history import parse_histories
-from archive import Archive
+from archive import Archive, UNITS
+from decisions import cents
 from study import Study
 
 ROOT = Path(__file__).resolve().parent
@@ -49,7 +50,7 @@ def load_config():
 
 def config():
     return {'ai_ready': bool(os.getenv('OPENAI_API_KEY') and os.getenv('OPENAI_MODEL')),
-            'model': os.getenv('OPENAI_MODEL', ''), 'version': '0.2.0',
+            'model': os.getenv('OPENAI_MODEL', ''), 'version': '0.2.1',
             'api_usage': dict(API_USAGE), 'api_call_limit': call_limit(), 'default_style':'decisive_positive_ev'}
 
 
@@ -131,11 +132,25 @@ def vision(data):
             raise ValueError()
         if len(set(parsed['hero'] + parsed['board'])) != len(parsed['hero'] + parsed['board']):
             raise ValueError()
-        for field in ('pot', 'call', 'opponents'):
+        amounts = ('pot', 'call', 'stack', 'account_balance', 'big_blind',
+                   'hero_bet', 'invested', 'min_raise_increment')
+        for field in (*amounts, 'opponents'):
             val = parsed.get(field)
             if val is not None and (isinstance(val, bool) or not isinstance(val, (float, int)) or not 0 <= val <= 1e9):
                 raise ValueError()
-        return {k: parsed.get(k) for k in ('hero', 'board', 'pot', 'call', 'opponents', 'notes')}
+            if val is not None:
+                cents(val, field)
+        if parsed.get('opponents') is not None and (not 1 <= parsed['opponents'] <= 8 or parsed['opponents'] != int(parsed['opponents'])):
+            raise ValueError()
+        for field in ('unit', 'account_unit'):
+            if parsed.get(field) is not None and parsed[field] not in UNITS:
+                raise ValueError()
+        if parsed.get('raise_reopened') is not None and not isinstance(parsed['raise_reopened'], bool):
+            raise ValueError()
+        if parsed.get('notes') is not None and not isinstance(parsed['notes'], str):
+            raise ValueError()
+        return {k: parsed.get(k) for k in ('hero', 'board', *amounts, 'opponents', 'unit',
+                                           'account_unit', 'raise_reopened', 'notes')}
     except (ValueError, TypeError, KeyError):
         raise ValueError('La lettura AI non è coerente. Inserisci o correggi i dati manualmente.') from None
 
@@ -240,7 +255,7 @@ def main():
     except OSError as error:
         raise SystemExit(f'Impossibile avviare RiverLens: {error}. Prova --port 8766.') from None
     url = f'http://127.0.0.1:{server.server_port}'
-    print(f'RiverLens 0.2.0 · {url}\nCtrl+C per terminare.', flush=True)
+    print(f'RiverLens 0.2.1 · {url}\nCtrl+C per terminare.', flush=True)
     if not args.no_browser:
         webbrowser.open(url)
     try:

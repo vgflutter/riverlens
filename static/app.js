@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="riverlens-token"]').content;
 let hands = [], selected = 0, step = 0, tab = 'replay', current = null, lastResult = null;
 let aiReady = false, busy = false, generation = 0, imageData = null, toastTimer;
-let studyTimer, aiJob=null, aiStudyBusy=false, savedBudget=null;
+let studyTimer, aiJob=null, aiStudyBusy=false, savedBudget=null, imageReview=false;
 const symbols = {h:'♥', d:'♦', c:'♣', s:'♠'};
 const format = n => Number(n).toLocaleString('it-IT', {maximumFractionDigits:2});
 const pct = n => (n * 100).toFixed(1).replace('.', ',') + '%';
@@ -33,7 +33,8 @@ function invalidate() {
   $('analysis-status').textContent=''; $('ai-answer').textContent='';
   $('decision-action').textContent='Aggiornamento…';$('decision-reason').textContent='';
   $('decision-assumptions').textContent='';$('legal-actions').replaceChildren();
-  $('opponent-profiles').replaceChildren();$('budget-summary').textContent='Aggiornamento dei limiti…';
+  $('opponent-profiles').replaceChildren();$('budget-summary').textContent='Lettura dello stack…';
+  $('decision-source').textContent='IN ATTESA DEI DATI';
   $('decision-ai-status').textContent='';aiJob=null;
   clearTimeout(studyTimer);studyTimer=setTimeout(updateStudy,350);
 }
@@ -72,7 +73,7 @@ function renderTable(hole, board, players, hero, pot, call, street, nextActor, b
   $('street-badge').textContent=street;
   const heroPlayer=players.find(p=>p.name===hero);
   $('hero-name').textContent=hero;
-  $('hero-stack').textContent=heroPlayer?.stack===null?'Scenario':format(heroPlayer?.stack||0)+' '+unit;
+  $('hero-stack').textContent=heroPlayer?.stack===null?'Stack n/d':format(heroPlayer?.stack||0)+' '+unit;
   $('hero-position').textContent=heroPlayer?.seat===button?'BTN':'HERO';
   $('call-amount').textContent=format(call)+' '+unit;
   $('opponent-seats').replaceChildren(...players.filter(p=>p.name!==hero).map(p=>{
@@ -107,19 +108,21 @@ function renderReplay() {
 function goStep(index) {step=index;invalidate();renderReplay();}
 function labValues() {return {hero:$('hero-input').value,board:$('board-input').value,pot:$('pot-input').value,call:$('call-input').value,opponents:$('opponents-input').value,villain:$('villain-input').value};}
 function fillLab(data) {
-  for(const k of ['hero','board','pot','call','opponents','villain']) {
+  for(const k of ['hero','board','pot','call','opponents','villain','stack','unit']) {
     if(data[k]!==undefined)$(`${k}-input`).value=Array.isArray(data[k])?data[k].join(' '):(data[k]??'');
   }
 }
+function needsImageReview() {return imageReview&&!$('vision-verified').checked;}
+function activeUnit() {return tab==='replay'?(hands[selected]?.unit||'chips'):$('unit-input').value;}
 function looseCards(text) { return (text.match(/[2-9TJQKA][cdhs]/gi)||[]).map(c=>c[0].toUpperCase()+c[1].toLowerCase()); }
 function renderLabPreview(result) {
   const raw=labValues(),data=result?.context;
   const hero=data?.hero||looseCards(raw.hero),board=data?.board||looseCards(raw.board);
   const n=Number(data?.opponents||raw.opponents||1);
-  const players=[{name:'Hero',stack:null,seat:0},...Array.from({length:n},(_,i)=>({name:'Avversario '+(i+1),stack:null,seat:i+1,shown:data?.villain||[]}))];
-  renderTable(hero,board,players,'Hero',Number(data?.pot??raw.pot)||0,Number(data?.call??raw.call)||0,{0:'PREFLOP',3:'FLOP',4:'TURN',5:'RIVER'}[board.length]||'SCENARIO',null,null);
+  const players=[{name:'Hero',stack:$('stack-input').value===''?null:Number($('stack-input').value),seat:0},...Array.from({length:n},(_,i)=>({name:'Avversario '+(i+1),stack:null,seat:i+1,shown:data?.villain||[]}))];
+  renderTable(hero,board,players,'Hero',Number(data?.pot??raw.pot)||0,Number(data?.call??raw.call)||0,{0:'PREFLOP',3:'FLOP',4:'TURN',5:'RIVER'}[board.length]||'SCENARIO',null,null,activeUnit()||'unità n/d');
   $('table-kicker').textContent='LABORATORIO · SCENARIO SIMULATO';$('hand-title').textContent='La tua simulazione';
-  $('table-message').textContent='Gli stack non entrano nel modello semplificato.';$('turn-label').textContent='Scenario modificabile';
+  $('table-message').textContent=imageReview?'Trascrizione archiviata: verifica i dati e le ipotesi prima di simulare.':'Lo stack limita gli importi dello scenario; il saldo del conto non è noto.';$('turn-label').textContent='Scenario modificabile';
 }
 function showResult(result) {
   lastResult=result;$('analysis-empty').hidden=true;$('analysis-result').hidden=false;
@@ -129,13 +132,15 @@ function showResult(result) {
   $('made-hand').textContent=result.made_hand;
   $('win-value').textContent=pct(result.win);$('tie-value').textContent=pct(result.tie);
   $('odds-value').textContent=result.context.call?pct(result.pot_odds):'Nessun call';
-  $('ev-value').textContent=result.context.call?(result.call_ev_model>=0?'+':'')+format(result.call_ev_model)+' chip':'—';
+  $('ev-value').textContent=result.context.call?(result.call_ev_model>=0?'+':'')+format(result.call_ev_model)+' '+(activeUnit()||'unità n/d'):'—';
   $('assumption-text').textContent=result.assumption;
   $('sample-count').textContent=result.exact?'Confronto esatto':format(result.samples)+' simulazioni';
   $('calculation-time').textContent=result.elapsed_ms+' ms';
 }
 async function calculate() {
   if(busy)return;
+  if(tab==='lab'&&needsImageReview())return toast('Verifica la trascrizione e conferma i dati prima di simulare.');
+  if(tab==='lab'&&!$('lab-form').reportValidity())return;
   if(tab==='replay'&&!hands[selected]?.snapshots[step]?.hero_decision)return;
   const data=tab==='lab'?labValues():current;
   if(!data)return;
@@ -164,7 +169,14 @@ async function importHands() {
 function showSettings() { $('settings-dialog').showModal(); }
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 document.querySelectorAll('.close-dialog').forEach(b=>b.onclick=()=>b.closest('dialog').close());
-document.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>{fillLab(presets[b.dataset.preset]);invalidate();renderLabPreview();});
+document.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>{
+  imageReview=false;$('vision-review').hidden=true;$('vision-notes').hidden=true;$('vision-verified').checked=false;
+  fillLab({...presets[b.dataset.preset],stack:200,unit:'chips'});
+  $('big-blind-input').value=2;$('hero-bet-input').value=0;$('invested-input').value=0;
+  $('min-raise-input').value='';$('min-raise-input').required=false;$('min-raise-input').placeholder='Automatico: puntata corrente';
+  $('raise-reopened-input').checked=true;$('raise-reopened-input').indeterminate=false;
+  invalidate();renderLabPreview();
+});
 $('open-import').onclick=()=>{$('import-error').textContent='';$('import-dialog').showModal();};
 $('settings-button').onclick=showSettings;
 $('import-confirm').onclick=importHands;
@@ -174,7 +186,10 @@ $('step-slider').oninput=event=>goStep(Number(event.target.value));
 $('previous-step').onclick=()=>goStep(Math.max(0,step-1));
 $('next-step').onclick=()=>goStep(Math.min(hands[selected].snapshots.length-1,step+1));
 $('lab-form').onsubmit=event=>{event.preventDefault();calculate();};
-$('lab-form').oninput=()=>{invalidate();current=null;renderLabPreview();};
+$('lab-form').oninput=event=>{
+  if(imageReview&&event.target.id!=='vision-verified')$('vision-verified').checked=false;
+  invalidate();current=null;renderLabPreview();
+};
 $('calculate-button').onclick=calculate;
 document.addEventListener('keydown',e=>{
   if(tab!=='replay'||!hands.length||['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)||document.querySelector('dialog[open]'))return;
@@ -198,12 +213,21 @@ $('image-file').onchange=async e=>{
 $('read-image').onclick=async()=>{
   if(!aiReady)return showSettings();
   if(!$('archived-check').checked||!$('vision-consent').checked)return toast('Conferma origine archiviata e invio dell’immagine.');
+  const readingImage=imageData;
   $('read-image').disabled=true;$('vision-status').textContent='Lettura in corso…';
   try {
     const data=await api('/api/vision',{image:imageData,archived:true,consent:true});
-    fillLab({...data,villain:'',opponents:data.opponents>=1&&data.opponents<=8?data.opponents:1});
+    if(readingImage!==imageData)return;
+    imageReview=true;
+    fillLab({...data,villain:''});
+    for(const [key,id] of Object.entries({big_blind:'big-blind-input',hero_bet:'hero-bet-input',invested:'invested-input',min_raise_increment:'min-raise-input'}))$(id).value=data[key]??'';
+    $('min-raise-input').required=true;$('min-raise-input').placeholder='Non leggibile: verifica';
+    $('raise-reopened-input').checked=data.raise_reopened===true;
+    $('raise-reopened-input').indeterminate=data.raise_reopened===null;
+    $('vision-review').hidden=false;$('vision-verified').checked=false;
+    $('vision-wallet').textContent=data.account_balance===null?'Saldo conto nello screenshot: non visibile.':`Saldo conto nello screenshot: ${format(data.account_balance)} ${data.account_unit||'(unità non leggibile)'}. Separato dallo stack, non sommato alla disponibilità della simulazione.`;
     $('vision-notes').hidden=false;$('vision-notes').textContent='Trascrizione AI da verificare: '+(data.notes||'Controlla tutte le carte e gli importi prima di calcolare.');
-    setTab('lab');toast('Dati trascritti. Controllali prima di calcolare.');$('vision-status').textContent='Trascrizione completata.';
+    setTab('lab');toast('Dati trascritti. I campi non leggibili restano vuoti: verifica prima di simulare.');$('vision-status').textContent='Trascrizione completata.';
   }catch(e){$('vision-status').textContent=e.message;}
   finally{$('read-image').disabled=false;}
 };
@@ -212,31 +236,37 @@ function studyRequest() {
     const h=hands[selected];if(!h)return null;
     return {source:h.isDemo?'demo':'archive',hand_id:h.id,step};
   }
-  if(tab!=='lab')return null;
+  if(tab!=='lab'||needsImageReview())return null;
   const scenario=labValues();
   scenario.stack=$('stack-input').value;scenario.big_blind=$('big-blind-input').value;
+  scenario.unit=$('unit-input').value;
   scenario.hero_bet=Number($('hero-bet-input').value);scenario.current_bet=scenario.hero_bet+Number(scenario.call);
   scenario.invested=$('invested-input').value;scenario.raise_reopened=$('raise-reopened-input').checked;
   scenario.min_raise_increment=$('min-raise-input').value||Math.max(Number(scenario.big_blind),scenario.current_bet);
   return {source:'simulation',scenario};
 }
-function actionLabel(a) {
+function actionLabel(a, unit) {
   if(!a)return 'DATI INSUFFICIENTI';
   if(a.action==='fold'||a.action==='check')return a.action.toUpperCase();
-  if(a.action==='raise')return 'RAISE A '+format(a.raise_to);
-  if(a.action==='bet')return 'BET '+format(a.amount_add);
-  if(a.action==='all_in')return 'ALL-IN '+format(a.amount_add)+(a.underlying==='call'?' · CALL':'');
-  return 'CALL '+format(a.amount_add);
+  if(a.action==='raise')return 'RAISE A '+format(a.raise_to)+' '+unit;
+  if(a.action==='bet')return 'BET '+format(a.amount_add)+' '+unit;
+  if(a.action==='all_in')return 'ALL-IN '+format(a.amount_add)+' '+unit+(a.underlying==='call'?' · CALL':'');
+  return 'CALL '+format(a.amount_add)+' '+unit;
 }
 function renderStudy(report) {
   const rec=report.recommendation,budget=report.budget;
-  $('decision-action').textContent=!budget.configured?'CONFIGURA IL BUDGET':!report.legal_actions.length?'NESSUNA DECISIONE':actionLabel(report.selected_action);
+  $('decision-action').textContent=!budget.configured?'STACK NON DISPONIBILE':!report.legal_actions.length?'NESSUNA DECISIONE':actionLabel(report.selected_action,budget.unit);
   $('decision-reason').textContent=rec.rationale;
   $('decision-source').textContent=rec.source==='openai'?'OPENAI · '+rec.confidence.toUpperCase():'REGOLA DIDATTICA · SUPPORTO BASSO';
   $('decision-assumptions').textContent=(rec.assumptions||[]).join(' ');
   $('legal-actions').replaceChildren(...report.legal_actions.map(a=>el('span','legal-pill',a.action.toUpperCase()+(a.max_add?' '+format(a.min_add)+(a.max_add!==a.min_add?'–'+format(a.max_add):''):'')+(a.underlying==='call'&&a.all_in?' (call)':''))));
-  $('budget-summary').textContent=budget.configured&&budget.unit&&budget.bankroll_before_hand!==undefined?
-    `${budget.demo?'DEMO · ':''}${budget.unit} · Bankroll prima della mano ${format(budget.bankroll_before_hand)} · Risultato precedente ${format(budget.net_before_hand)} · Già impegnato ${format(budget.committed_this_hand)} · Ancora impegnabile ${format(budget.allowed_add)}. ${budget.stop_session?'STOP SESSIONE. ':''}${budget.reason}`:budget.reason;
+  const origin={hand_history:'Dalla hand history',demo_hand_history:'DEMO · dati sintetici',simulation:'Simulazione'}[budget.source];
+  const summary=[origin,budget.configured?`Stack residuo ${format(budget.observed_stack)} ${budget.unit}`:'Stack sconosciuto','Saldo conto non disponibile'];
+  if(budget.net_before_hand!==undefined)summary.push(`Risultato precedente ${format(budget.net_before_hand)} ${budget.unit} (${budget.source==='simulation'?'ipotizzato':'solo mani archiviate'})`);
+  if(budget.configured)summary.push(`Ancora impegnabile ${format(budget.allowed_add)} ${budget.unit}`);
+  if(budget.stop_session)summary.push('STOP SESSIONE');
+  if(budget.manual_limits)summary.push(`Limiti personali: stop ${budget.stop_loss??'—'}, mano ${budget.max_hand_loss??'—'}`);
+  summary.push(budget.reason);$('budget-summary').textContent=summary.join(' · ');
   $('history-count').textContent=report.past_hands+' mani precedenti';
   $('opponent-profiles').replaceChildren(...report.opponents.map(p=>{
     const box=el('div','profile-item');box.append(el('strong','',p.name),el('span','profile-count',p.hands+' mani · '+p.style));
@@ -249,6 +279,11 @@ function renderStudy(report) {
   if(report.equity){showResult(report.equity);current=report.equity.context;}
 }
 async function updateStudy() {
+  if(tab==='lab'&&(needsImageReview()||!$('lab-form').checkValidity()||(imageReview&&$('raise-reopened-input').indeterminate))){
+    $('decision-action').textContent=needsImageReview()?'VERIFICA LA TRASCRIZIONE':'DATI INCOMPLETI';
+    $('decision-reason').textContent='Verifica i campi mancanti e se il rilancio è consentito. Nessuno stack viene supposto.';
+    $('budget-summary').textContent='In attesa dei dati dello scenario.';return;
+  }
   const request=studyRequest();if(!request)return;
   const revision=generation;
   try {
@@ -272,14 +307,19 @@ async function processAIQueue() {
 }
 $('auto-ai').onchange=()=>{if($('auto-ai').checked&&!aiReady){$('auto-ai').checked=false;showSettings();return;}invalidate();};
 $('budget-button').onclick=()=>{
-  if(savedBudget){$('bankroll-config').value=savedBudget.bankroll;$('stop-loss-config').value=savedBudget.stop_loss;$('hand-limit-config').value=savedBudget.max_hand_loss;$('unit-config').value=savedBudget.unit;$('start-hand-config').value=savedBudget.start_hand_id;}
+  $('stop-loss-config').value=savedBudget?.stop_loss??'';$('hand-limit-config').value=savedBudget?.max_hand_loss??'';
+  $('unit-config').value=savedBudget?.unit||activeUnit()||'chips';$('start-hand-config').value=savedBudget?.start_hand_id||'0';
   $('budget-error').textContent='';$('budget-dialog').showModal();
 };
+async function saveLimits(limits) {
+  try {const result=await api('/api/session',limits);savedBudget=result.budget;$('budget-dialog').close();invalidate();}
+  catch(error){$('budget-error').textContent=error.message;}
+}
 $('budget-form').onsubmit=async e=>{
   e.preventDefault();
-  try {const result=await api('/api/session',{bankroll:$('bankroll-config').value,stop_loss:$('stop-loss-config').value,max_hand_loss:$('hand-limit-config').value,unit:$('unit-config').value,start_hand_id:$('start-hand-config').value});savedBudget=result.budget;$('budget-dialog').close();invalidate();}
-  catch(error){$('budget-error').textContent=error.message;}
+  await saveLimits({stop_loss:$('stop-loss-config').value,max_hand_loss:$('hand-limit-config').value,unit:$('unit-config').value,start_hand_id:$('start-hand-config').value||'0'});
 };
+$('clear-limits').onclick=()=>saveLimits({});
 (async()=>{
   try {const [status,archive,session]=await Promise.all([api('/api/status'),api('/api/archive'),api('/api/session')]);aiReady=status.ai_ready;savedBudget=session.budget;
     if(archive.hands.length){hands=archive.hands;chooseHand(0);}else await loadDemo();

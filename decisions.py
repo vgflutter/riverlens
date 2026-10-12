@@ -46,23 +46,39 @@ def legal_actions(state):
 
 
 def budget_status(config, state, net=0):
-    if config is None:
-        return {'configured': False, 'allowed_add': 0, 'blocked': True,
-                'reason': 'Imposta il budget prima delle proposte sulle mani importate.'}
-    if config['unit'] != state['unit']:
-        return {'configured': True, 'unit': config['unit'], 'allowed_add': 0, 'blocked': True,
-                'reason': 'Unità del budget diversa da quella del tavolo. Nessuna conversione automatica.'}
+    config = config or {}
+    source = state.get('budget_source', 'simulation')
+    base = {'configured': state.get('stack') is not None, 'unit': state['unit'],
+            'source': source, 'demo': source == 'demo_hand_history',
+            'observed_stack': state.get('stack'), 'account_balance': None,
+            'net_before_hand': net, 'allowed_add': 0, 'blocked': True, 'unavailable': True,
+            'stop_session': False, 'stop_loss': config.get('stop_loss'),
+            'max_hand_loss': config.get('max_hand_loss'),
+            'manual_limits': any(config.get(k) is not None for k in ('stop_loss', 'max_hand_loss'))}
+    if not base['configured']:
+        return {**base, 'reason': 'Stack non disponibile nei dati: nessun importo viene supposto.'}
+    if base['manual_limits'] and config.get('unit') != state['unit']:
+        return {**base, 'reason': 'Unità dei limiti diversa dal tavolo: modifica o rimuovi i limiti personali.'}
+    if state.get('before_session_start'):
+        return {**base, 'reason': 'Mano precedente all’inizio scelto per lo stop loss: modifica o rimuovi il limite.'}
     invested = cents(state.get('invested', 0))
-    balance = cents(config['bankroll']) + round(net*100)
-    loss_room = cents(config['stop_loss']) + round(net*100) - invested
-    hand_room = cents(config['max_hand_loss']) - invested
-    allowed = max(0, min(cents(state['stack']), balance-invested, loss_room, hand_room))
-    return {'configured': True, 'demo': config.get('demo', False), 'unit': config['unit'],
-            'bankroll_before_hand': balance/100, 'net_before_hand': net, 'committed_this_hand': invested/100,
-            'stop_loss': config['stop_loss'], 'max_hand_loss': config['max_hand_loss'],
+    # The snapshot stack is already net of bets. Never subtract investment again,
+    # add earlier winnings to it, or equate table chips with an account balance.
+    caps = [cents(state['stack'], 'Stack')]
+    stop = config.get('stop_loss')
+    hand_limit = config.get('max_hand_loss')
+    if stop is not None:
+        caps.append(cents(stop) + round(net*100) - invested)
+    if hand_limit is not None:
+        caps.append(cents(hand_limit) - invested)
+    allowed = max(0, min(caps))
+    return {**base, 'unavailable': False, 'committed_this_hand': invested/100,
             'allowed_add': allowed/100, 'blocked': allowed == 0,
-            'stop_session': balance <= 0 or cents(config['stop_loss']) + round(net*100) <= 0,
-            'reason': 'Limite di perdita raggiunto: nessuna ulteriore chip da impegnare.' if not allowed else 'Limiti simulati rispettati; non controllano un conto di gioco reale.'}
+            'stop_session': stop is not None and cents(stop) + round(net*100) <= 0,
+            'reason': ('Nessun importo aggiuntivo disponibile entro stack e limiti.' if not allowed else
+                       'Limiti personali applicati allo stack.' if base['manual_limits'] else
+                       'Stack acquisito automaticamente.' if source in ('hand_history', 'demo_hand_history') else
+                       'Stack dello scenario simulato.')}
 
 
 def candidates(actions, state, budget):
@@ -114,12 +130,10 @@ def baseline(state, options, equity, opponent_profiles, blocked_reason=None):
 
 
 def assess(state, config, net, opponent_profiles):
-    actions = legal_actions(state)
     budget = budget_status(config, state, net)
-    choices = candidates(actions, state, budget)
-    blocked = None
-    if not budget['configured'] or budget.get('unit', state['unit']) != state['unit']:
-        blocked = budget['reason']
+    actions = legal_actions(state) if budget['configured'] else []
+    choices = candidates(actions, state, budget) if not budget['unavailable'] else []
+    blocked = budget['reason'] if budget['unavailable'] else None
     if state.get('complex_pot') or state.get('ambiguous_bet'):
         blocked = 'Side pot, call parziale o puntata incompleta: stato non supportato dal modello di studio.'
     equity = None
