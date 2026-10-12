@@ -6,12 +6,19 @@ import json
 from pathlib import Path
 import re
 import threading
+import time
 
 MAX_FRAMES = 3
 MAX_IMAGE_BYTES = 2_000_000
 MAX_TOTAL_BYTES = 4_000_000
 SCREEN_WORK = threading.BoundedSemaphore(1)
 PROMPT = Path(__file__).resolve().parent / 'prompts' / 'screen_system.txt'
+FAST_PROMPT = PROMPT.with_name('screen_fast_system.txt')
+DEADLINES = (2000, 3000, 5000, 8000, 15000, 30000)
+
+
+class AnalysisExpired(ValueError):
+    """No advice may be used after the caller's decision window has elapsed."""
 
 
 def object_schema(properties):
@@ -37,6 +44,26 @@ SCHEMA = object_schema({
     'question': OPTIONAL_TEXT,
     'confidence': CONFIDENCE,
 })
+FAST_SCHEMA = object_schema({
+    'status': SCHEMA['properties']['status'],
+    'game': SCHEMA['properties']['game'],
+    'turn': SCHEMA['properties']['turn'],
+    'action': OPTIONAL_TEXT,
+    'reason': TEXT,
+    'confidence': CONFIDENCE,
+    'uncertainty': OPTIONAL_TEXT,
+    'question': OPTIONAL_TEXT,
+})
+
+
+def request_options(data):
+    mode = data.get('mode', 'detailed')
+    deadline = data.get('deadline_ms', 5000)
+    if mode not in ('fast', 'detailed'):
+        raise ValueError('Modalità non valida: usa fast o detailed.')
+    if type(deadline) is not int or deadline not in DEADLINES:
+        raise ValueError('Tempo massimo non valido: scegli 2, 3, 5, 8, 15 o 30 secondi.')
+    return mode, deadline
 
 
 def short_text(value, limit, label, optional=False):
@@ -162,7 +189,11 @@ def validate_answer(answer):
 
 
 def analyze_screen(data, ai_call, model):
+    started = time.monotonic()
+    mode, deadline_ms = request_options(data)
     frames, context = validate_request(data)
+    if mode == 'fast':
+        frames = frames[-1:]  # No accumulated scene history in the latency-critical path.
     content = [{'type': 'input_text', 'text': json.dumps({
         'task': 'Analizza la situazione dell’ULTIMO fotogramma e proponi la prossima mossa.',
         'user_context': context,
@@ -177,15 +208,40 @@ def analyze_screen(data, ai_call, model):
     if not SCREEN_WORK.acquire(blocking=False):
         raise ValueError('Un’analisi dello schermo è già in corso. Attendi prima di riprovare.')
     try:
-        raw = ai_call(PROMPT.read_text(), content, SCHEMA)
+        schema = FAST_SCHEMA if mode == 'fast' else SCHEMA
+        instructions = (FAST_PROMPT if mode == 'fast' else PROMPT).read_text()
         try:
-            answer = validate_answer(json.loads(raw))
+            raw = ai_call(instructions, content, schema)
+        except ValueError:
+            if (time.monotonic() - started) * 1000 >= deadline_ms:
+                raise AnalysisExpired('Tempo disponibile scaduto. Nessuna mossa utilizzabile.') from None
+            raise
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        if elapsed_ms >= deadline_ms:
+            raise AnalysisExpired('Risposta arrivata fuori tempo. La mossa è stata scartata.')
+        try:
+            answer = json.loads(raw)
+            if mode == 'fast':
+                validate_schema(answer, FAST_SCHEMA)
+                answer = {
+                    'status': answer['status'], 'game': answer['game'], 'turn': answer['turn'],
+                    'confidence': answer['confidence'], 'question': answer['question'],
+                    'next_move': {'action': answer['action'], 'reason': answer['reason'], 'steps': []}
+                        if answer['action'] else None,
+                    'summary': answer['reason'], 'observations': [], 'changes': [], 'alternatives': [],
+                    'uncertainties': [answer['uncertainty']] if answer['uncertainty'] else [],
+                }
+            answer = validate_answer(answer)
             if len(frames) == 1:
                 answer['changes'] = []  # No temporal evidence exists in a single image.
         except (ValueError, TypeError, RecursionError):
             raise ValueError('Risposta visiva non valida. Nessuna mossa disponibile; riprova con un’immagine più chiara.') from None
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        if elapsed_ms >= deadline_ms:
+            raise AnalysisExpired('Tempo scaduto durante la verifica della risposta. Mossa scartata.')
     finally:
         SCREEN_WORK.release()
     return {**answer, 'model': model, 'frame_count': len(frames),
+            'mode': mode, 'deadline_ms': deadline_ms, 'elapsed_ms': elapsed_ms,
             'analyzed_at': datetime.now(timezone.utc).isoformat(),
             'captured_at': frames[-1]['captured_at'], 'source': 'screen_ai'}

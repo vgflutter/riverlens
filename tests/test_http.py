@@ -86,6 +86,16 @@ class HttpTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, status)
                 call.assert_not_called()
 
+    def test_late_screen_analysis_returns_expired_status_without_a_move(self):
+        from test_screen import request_data
+        with patch('server.screen_analysis', side_effect=server.AnalysisExpired('Troppo tardi.')):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request('/api/screen/analyze', request_data())
+            self.assertEqual(error.exception.code, 408)
+            body = json.load(error.exception)
+            self.assertEqual(body['code'], 'deadline_exceeded')
+            self.assertNotIn('next_move', body)
+
     def test_budget_and_automatic_recommendation_flow(self):
         with self.request('/api/import',{'text':(server.ROOT/'examples'/'demo.txt').read_text()}) as reply:
             hand=json.load(reply)['hands'][0]

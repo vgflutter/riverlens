@@ -31,7 +31,63 @@ def answer_data():
             'alternatives': [], 'uncertainties': [], 'question': None, 'confidence': 'medium'}
 
 
+def fast_answer():
+    answer = answer_data()
+    return {key: answer[key] for key in ('status', 'game', 'turn', 'confidence', 'question')} | {
+        'action': 'Blocca in alto a destra.', 'reason': 'Evita la chiusura della riga.', 'uncertainty': None}
+
+
 class ScreenTests(unittest.TestCase):
+    def test_fast_path_sends_one_frame_and_expands_a_compact_result(self):
+        call = MagicMock(return_value=json.dumps(fast_answer()))
+        result = screen.analyze_screen({**request_data(3), 'mode': 'fast'}, call, 'test')
+        self.assertEqual(call.call_args.args[2], screen.FAST_SCHEMA)
+        images = [item for item in call.call_args.args[1] if item['type'] == 'input_image']
+        self.assertEqual(len(images), 1)
+        self.assertEqual(result['frame_count'], 1)
+        self.assertEqual(result['mode'], 'fast')
+        self.assertIsNotNone(result['next_move'])
+        self.assertEqual(result['alternatives'], [])
+        self.assertGreaterEqual(result['elapsed_ms'], 0)
+
+    def test_invalid_mode_and_deadline_fail_before_provider_call(self):
+        for change in [{'mode': 'invalid'}, {'mode': None}, {'deadline_ms': True},
+                       {'deadline_ms': 1}, {'deadline_ms': '5000'}, {'deadline_ms': 5000.0}]:
+            with self.subTest(change=change):
+                call = MagicMock()
+                with self.assertRaises(ValueError):
+                    screen.analyze_screen({**request_data(), **change}, call, 'test')
+                call.assert_not_called()
+
+    def test_late_valid_response_is_discarded_and_lock_released(self):
+        with patch('screen.time.monotonic', side_effect=[10, 15.001]):
+            with self.assertRaises(screen.AnalysisExpired):
+                screen.analyze_screen(request_data(), MagicMock(return_value=json.dumps(answer_data())), 'test')
+        screen.analyze_screen(request_data(), MagicMock(return_value=json.dumps(answer_data())), 'test')
+
+    def test_provider_timeout_at_deadline_is_an_expired_result(self):
+        with patch('screen.time.monotonic', side_effect=[10, 15.1]):
+            with self.assertRaises(screen.AnalysisExpired):
+                screen.analyze_screen(request_data(), MagicMock(side_effect=ValueError('timeout')), 'test')
+
+    def test_response_validation_time_is_part_of_the_server_deadline(self):
+        with patch('screen.time.monotonic', side_effect=[10, 14.9, 15.1]):
+            with self.assertRaises(screen.AnalysisExpired):
+                screen.analyze_screen(request_data(), MagicMock(return_value=json.dumps(answer_data())), 'test')
+
+    def test_fast_low_confidence_is_still_blocked(self):
+        answer = {**fast_answer(), 'confidence': 'low'}
+        result = screen.analyze_screen({**request_data(), 'mode': 'fast'}, MagicMock(return_value=json.dumps(answer)), 'test')
+        self.assertEqual(result['status'], 'needs_context')
+        self.assertIsNone(result['next_move'])
+
+    def test_screen_model_token_limit_and_network_timeout_are_separate_from_poker(self):
+        with patch.dict(os.environ, {'OPENAI_MODEL': 'poker-model', 'OPENAI_SCREEN_MODEL': 'fast-model'}), \
+                patch('server.response_text', return_value=json.dumps(fast_answer())) as call:
+            result = server.screen_analysis({**request_data(), 'mode': 'fast', 'deadline_ms': 3000})
+            self.assertEqual(call.call_args.kwargs, {'model': 'fast-model', 'max_output_tokens': 400, 'timeout': 3.0})
+            self.assertEqual(result['model'], 'fast-model')
+
     def test_multimodal_request_preserves_order_and_does_not_send_extra_fields(self):
         data = request_data(3)
         data['api_key'] = 'must-not-be-forwarded'

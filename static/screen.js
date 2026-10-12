@@ -1,13 +1,29 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="riverlens-token"]').content;
-const SAMPLE_MS = 2000;
+const SAMPLE_MS = 500;
 const HISTORY_MS = 30000;
 let stream = null, source = null, sourceReady = false, imageURL = null;
 let frames = [], revision = 0, loadTicket = 0, sharing = false;
 let busy = false, controller = null, sampleTimer = null, autoTimer = null;
 let aiReady = false, callsAvailable = false, lastSentImage = null;
-let reportImage = null, reportTime = null, reportWasLive = false;
+let reportImage = null, reportWasLive = false, reportExpiresAt = 0, expiryTimer = null;
+
+const fastMode = () => $('analysis-mode').value === 'fast';
+function deadlineMs() {
+  const value = Number($('deadline').value);
+  return [2000, 3000, 5000, 8000, 15000, 30000].includes(value) ? value : 5000;
+}
+
+function clearAdvice(reason) {
+  clearTimeout(expiryTimer);
+  expiryTimer = null;
+  reportImage = null;
+  $('result').hidden = true;
+  $('result-empty').hidden = false;
+  $('result-note').textContent = reason;
+  $('confidence').textContent = 'Da aggiornare';
+}
 
 function message(text, error = false) {
   $('operation-status').textContent = text;
@@ -36,10 +52,7 @@ function invalidate() {
   autoTimer = null;
   frames = [];
   lastSentImage = null;
-  reportImage = null;
-  reportTime = null;
-  $('result').hidden = true;
-  $('result-empty').hidden = false;
+  clearAdvice('In attesa di un’analisi sul contesto aggiornato.');
   $('confidence').textContent = 'In attesa';
   $('frame-preview').hidden = true;
   $('frame-preview').removeAttribute('src');
@@ -100,7 +113,7 @@ function captureFrame() {
   if (!width || !height) throw new Error('L’immagine non è ancora disponibile.');
   const crop = cropBounds();
   const sw = width * crop.w, sh = height * crop.h;
-  let scale = Math.min(1, 1600 / Math.max(sw, sh));
+  let scale = Math.min(1, (fastMode() ? 1280 : 1600) / Math.max(sw, sh));
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d', {alpha: false});
   let image = '';
@@ -109,7 +122,7 @@ function captureFrame() {
     canvas.width = Math.max(1, Math.round(sw * scale));
     canvas.height = Math.max(1, Math.round(sh * scale));
     context.drawImage(element, width * crop.x, height * crop.y, sw, sh, 0, 0, canvas.width, canvas.height);
-    image = canvas.toDataURL('image/jpeg', 0.86);
+    image = canvas.toDataURL('image/jpeg', fastMode() ? 0.82 : 0.86);
     if (image.length < 1_600_000) break;
     scale *= 0.8;
   }
@@ -135,7 +148,10 @@ function captureFrame() {
 }
 
 function markStale() {
-  $('stale').hidden = !reportImage || (reportImage === frames.at(-1)?.image && !(reportWasLive && Date.now() - reportTime > 15000));
+  if (!reportImage) return;
+  if (reportImage !== frames.at(-1)?.image || (reportWasLive && performance.now() >= reportExpiresAt)) {
+    clearAdvice('Consiglio ritirato: immagine cambiata o tempo disponibile scaduto.');
+  }
 }
 
 function sampleLoop() {
@@ -143,6 +159,7 @@ function sampleLoop() {
   if (source !== 'screen' || !sourceReady) return;
   try {
     captureFrame();
+    scheduleAutomatic();
   } catch (error) {
     pauseAutomatic();
     invalidate();
@@ -192,7 +209,7 @@ async function shareScreen() {
     $('video').hidden = false;
     $('placeholder').hidden = true;
     $('source-badge').textContent = 'Schermo collegato';
-    $('capture-status').textContent = 'Cattura locale ogni 2 secondi. Audio escluso. Condividi la finestra del gioco per evitare l’effetto specchio.';
+    $('capture-status').textContent = 'Cattura locale ogni 0,5 s. Audio escluso. Scegli la finestra del gioco per evitare l’effetto specchio.';
     sampleLoop();
     message('Schermo pronto. Puoi analizzare ora o attivare l’analisi automatica.');
   } catch (error) {
@@ -249,10 +266,10 @@ async function refreshStatus() {
   const response = await fetch('/api/status');
   if (!response.ok) throw new Error('Impossibile verificare il collegamento al server.');
   const status = await response.json();
-  aiReady = status.ai_ready;
+  aiReady = status.screen_ai_ready ?? status.ai_ready;
   callsAvailable = status.api_usage.attempts < status.api_call_limit;
   $('connection').textContent = aiReady
-    ? `AI configurata · ${status.model}. Il modello deve supportare immagini e risposte strutturate.`
+    ? `AI configurata · ${status.screen_model || status.model}. Il tempo effettivo dipende dal modello e dalla rete.`
     : 'Per l’analisi configura OPENAI_API_KEY e OPENAI_MODEL in .env e riavvia RiverLens. Scegli un modello con supporto immagini e risposte strutturate. La cattura locale è già disponibile.';
   $('connection').classList.toggle('warning', !aiReady);
   $('usage').textContent = `Chiamate API: ${status.api_usage.attempts} / ${status.api_call_limit} per questo avvio, condivise con lo studio poker.`;
@@ -269,10 +286,12 @@ function renderList(id, items) {
   $(id).replaceChildren(...nodes);
 }
 
-function renderResult(result, frame, live) {
+function renderResult(result, frame, live, expiresAt) {
   reportImage = frame.image;
-  reportTime = Date.parse(result.captured_at);
   reportWasLive = live;
+  reportExpiresAt = expiresAt;
+  clearTimeout(expiryTimer);
+  if (live) expiryTimer = setTimeout(markStale, Math.max(0, expiresAt - performance.now()));
   $('result-empty').hidden = true;
   $('result').hidden = false;
   $('game-name').textContent = [result.game.title, result.game.genre].filter(Boolean).join(' · ') || 'Gioco non riconosciuto';
@@ -284,9 +303,13 @@ function renderResult(result, frame, live) {
   $('question').textContent = result.question || '';
   $('question').hidden = !result.question;
   $('summary').textContent = result.summary;
+  $('evidence').hidden = result.mode === 'fast';
+  $('result-grid').classList.toggle('fast', result.mode === 'fast');
   renderList('observations', result.observations);
   renderList('changes', result.changes);
   renderList('uncertainties', result.uncertainties);
+  $('fast-uncertainty').textContent = result.mode === 'fast' ? result.uncertainties.join(' ') : '';
+  $('fast-uncertainty').hidden = !result.uncertainties.length || result.mode !== 'fast';
   $('changes-title').hidden = !result.changes.length;
   $('uncertainties-title').hidden = !result.uncertainties.length;
   $('alternatives').replaceChildren(...result.alternatives.map(item => {
@@ -303,9 +326,10 @@ function scheduleAutomatic() {
   clearTimeout(autoTimer);
   autoTimer = null;
   if (!$('auto').checked || !$('consent').checked || source !== 'screen' || busy) return;
-  const seconds = Number($('interval').value);
-  const delay = [5, 10, 20, 30].includes(seconds) ? seconds * 1000 : 10000;
-  autoTimer = setTimeout(() => analyze(true), delay);
+  // The sampler wakes idle analysis; after a response only the latest changed frame matters.
+  if (frames.at(-1)?.image && frames.at(-1).image !== lastSentImage) {
+    autoTimer = setTimeout(() => analyze(true), 0);
+  }
 }
 
 async function analyze(automatic = false) {
@@ -313,9 +337,13 @@ async function analyze(automatic = false) {
   clearTimeout(autoTimer);
   autoTimer = null;
   const generation = revision;
+  const started = performance.now();
+  const budget = deadlineMs();
+  const expiresAt = started + budget;
   let frame;
   try {
     frame = captureFrame();
+    if (performance.now() >= expiresAt) throw new Error('Cattura troppo lenta per il tempo disponibile. Ritaglia un’area più piccola.');
   } catch (error) {
     pauseAutomatic();
     invalidate();
@@ -324,21 +352,30 @@ async function analyze(automatic = false) {
   }
   if (automatic && lastSentImage === frame.image) {
     message('Immagine invariata: nessuna nuova chiamata AI.');
-    scheduleAutomatic();
     return;
   }
   const live = source === 'screen';
   const request = {
     consent: true,
-    frames: live ? frames.slice() : [frame],
+    frames: live && !fastMode() ? frames.slice() : [frame],
+    mode: fastMode() ? 'fast' : 'detailed',
+    deadline_ms: budget,
     game_hint: $('game-hint').value.trim(),
     goal: $('goal').value.trim(),
   };
   busy = true;
   controller = new AbortController();
-  const timeout = setTimeout(() => controller?.abort(), 60000);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    if (generation !== revision) return;
+    timedOut = true;
+    pauseAutomatic();
+    clearAdvice('Tempo disponibile scaduto. Nessuna mossa utilizzabile.');
+    message('Tempo massimo superato: analisi automatica in pausa.', true);
+    controller?.abort();
+  }, Math.max(0, expiresAt - performance.now()));
   controls();
-  message('Analisi in corso… Il consiglio si riferirà al fotogramma appena inviato.');
+  message(`Analisi in corso… Tempo massimo: ${budget / 1000} s.`);
   try {
     const response = await fetch('/api/screen/analyze', {
       method: 'POST', signal: controller.signal,
@@ -347,18 +384,28 @@ async function analyze(automatic = false) {
     });
     const result = await response.json();
     if (generation !== revision) return;
+    const elapsed = performance.now() - started;
+    $('latency').textContent = `Ultima risposta: ${(elapsed / 1000).toFixed(2)} s · tempo massimo ${budget / 1000} s`;
+    if (timedOut || elapsed >= budget) throw new Error('Risposta fuori tempo: mossa scartata. Analisi automatica in pausa.');
     if (!response.ok) throw new Error(result.error || 'Analisi non riuscita.');
     lastSentImage = frame.image;
-    renderResult(result, frame, live);
+    // Re-sample at completion, including when background timers have been throttled.
+    if (live && captureFrame().image !== frame.image) {
+      clearAdvice('Schermo cambiato durante l’analisi: risposta scartata.');
+      message('Schermo cambiato: preparo l’ultimo fotogramma.');
+      return;
+    }
+    if (performance.now() >= expiresAt) throw new Error('Tempo disponibile scaduto: mossa scartata.');
+    renderResult(result, frame, live, expiresAt);
     message(result.status === 'ready' ? 'Analisi completata. Verifica il consiglio rispetto allo stato attuale.' : 'Analisi completata: servono altre informazioni prima di proporre una mossa.');
   } catch (error) {
     if (generation !== revision) return;
     pauseAutomatic();
     // Never leave an old successful proposal looking like the failed new request.
-    $('result').hidden = true;
-    $('result-empty').hidden = false;
+    clearAdvice('Nessuna nuova mossa disponibile.');
     $('confidence').textContent = 'Analisi non disponibile';
-    message(error.name === 'AbortError' ? 'Analisi interrotta o scaduta. Nessun nuovo consiglio disponibile.' : error.message, true);
+    $('latency').textContent = `Ultimo tentativo: ${((performance.now() - started) / 1000).toFixed(2)} s · tempo massimo ${budget / 1000} s`;
+    message(error.name === 'AbortError' ? 'Tempo scaduto o analisi interrotta. Nessun nuovo consiglio disponibile.' : error.message, true);
   } finally {
     clearTimeout(timeout);
     controller = null;
@@ -388,7 +435,8 @@ $('auto').onchange = () => {
   if ($('auto').checked) analyze(true);
   else { pauseAutomatic(); message('Analisi automatica in pausa. La cattura locale continua.'); }
 };
-$('interval').onchange = scheduleAutomatic;
+$('analysis-mode').onchange = contextChanged;
+$('deadline').onchange = contextChanged;
 $('consent').onchange = () => {
   if (!$('consent').checked) {
     pauseAutomatic();

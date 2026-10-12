@@ -17,7 +17,7 @@ from history import parse_histories
 from archive import Archive, UNITS
 from decisions import cents
 from study import Study
-from screen import analyze_screen
+from screen import AnalysisExpired, analyze_screen, request_options
 
 ROOT = Path(__file__).resolve().parent
 TOKEN = secrets.token_urlsafe(32)
@@ -45,14 +45,20 @@ def load_config():
         for line in path.read_text().splitlines():
             if '=' in line and not line.lstrip().startswith('#'):
                 key, value = line.split('=', 1)
-                if key.strip() in ('OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_MAX_CALLS'):
+                if key.strip() in ('OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_SCREEN_MODEL', 'OPENAI_MAX_CALLS'):
                     os.environ.setdefault(key.strip(), value.strip().strip('"\''))
 
 
 def config():
     return {'ai_ready': bool(os.getenv('OPENAI_API_KEY') and os.getenv('OPENAI_MODEL')),
+            'screen_ai_ready': bool(os.getenv('OPENAI_API_KEY') and screen_model()),
+            'screen_model': screen_model(),
             'model': os.getenv('OPENAI_MODEL', ''), 'version': '0.3.0',
             'api_usage': dict(API_USAGE), 'api_call_limit': call_limit(), 'default_style':'decisive_positive_ev'}
+
+
+def screen_model():
+    return os.getenv('OPENAI_SCREEN_MODEL', '').strip() or os.getenv('OPENAI_MODEL', '')
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -60,12 +66,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def response_text(instructions, content, schema=None):
-    if not config()['ai_ready']:
+def response_text(instructions, content, schema=None, *, model=None, max_output_tokens=1600, timeout=50):
+    model = model or os.getenv('OPENAI_MODEL', '')
+    if not os.getenv('OPENAI_API_KEY') or not model:
         raise ValueError('Configura OPENAI_API_KEY e OPENAI_MODEL nel file .env e riavvia RiverLens.')
-    payload = {'model': os.environ['OPENAI_MODEL'], 'instructions': instructions,
+    payload = {'model': model, 'instructions': instructions,
                'input': [{'role': 'user', 'content': content}], 'store': False,
-               'max_output_tokens': 1600}
+               'max_output_tokens': max_output_tokens}
     if schema:
         payload['text'] = {'format': {'type':'json_schema', 'name':'riverlens_decision', 'strict':True, 'schema':schema}}
     with API_LOCK:
@@ -76,7 +83,7 @@ def response_text(instructions, content, schema=None):
         data=json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY'],
                                                    'Content-Type': 'application/json'}, method='POST')
     try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=50) as reply:
+        with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as reply:
             result = json.load(reply)
     except urllib.error.HTTPError as error:
         raise ValueError(f'OpenAI ha risposto HTTP {error.code}. Verifica modello, chiave, credito e limiti API.') from None
@@ -164,7 +171,13 @@ def recommend(data):
 
 
 def screen_analysis(data):
-    return analyze_screen(data, response_text, os.getenv('OPENAI_MODEL', ''))
+    mode, deadline_ms = request_options(data)
+    model = screen_model()
+    def invoke(instructions, content, schema):
+        return response_text(instructions, content, schema, model=model,
+                             max_output_tokens=400 if mode == 'fast' else 1600,
+                             timeout=deadline_ms / 1000)
+    return analyze_screen(data, invoke, model)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -246,6 +259,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, methods[self.path](data))
             finally:
                 WORK.release()
+        except AnalysisExpired as error:
+            self.send(408, {'error': str(error), 'code': 'deadline_exceeded'})
         except (ValueError, TypeError, TimeoutError, UnicodeError) as error:
             self.send(400, {'error': str(error)[:300]})
         except Exception:
