@@ -47,10 +47,18 @@ def parse_one(text):
         raise ValueError('Carte personali non valide.')
     button_match = re.search(r'Seat #(\d+) is the button', header)
     button = int(button_match[1]) if button_match else None
+    blind_match = re.search(r': posts big blind ' + MONEY, header)
+    big_blind = amount(blind_match[1]) if blind_match else 0
+    if big_blind <= 0:
+        raise ValueError('Big blind non riconosciuto.')
+    unit = 'chips' if 'Tournament' in lines[0] else next((code for symbol, code in [('$','USD'),('€','EUR'),('£','GBP')] if symbol in lines[0]), 'chips')
     snapshots, board, pot, street = [], [], 0, 'PREFLOP'
     awarded = 0
+    last_full_raise = big_blind
+    acted_at = {}
+    ambiguous_bet = False
 
-    def snapshot(label, actor=None, kind='event'):
+    def snapshot(label, actor=None, kind='event', action=None):
         live = [p for p in players.values() if not p['folded']]
         target = max((p['bet'] for p in live), default=0)
         due = max(0, target - players[hero]['bet']) if not players[hero]['folded'] else 0
@@ -60,7 +68,11 @@ def parse_one(text):
                           'players': copy.deepcopy(list(players.values())), 'board': list(board),
                           'hero': hero, 'hole': list(hole), 'pot': pot/100, 'call': due/100,
                           'opponents': len([p for p in live if p['name'] != hero]),
-                          'complex_pot': complex_pot})
+                          'complex_pot': complex_pot, 'action': action,
+                          'big_blind': big_blind/100, 'current_bet': target/100,
+                          'min_raise_increment': last_full_raise/100,
+                          'raise_reopened': hero not in acted_at or target - acted_at[hero] >= last_full_raise,
+                          'ambiguous_bet': ambiguous_bet})
 
     def invest(name, value, is_ante=False):
         nonlocal pot
@@ -85,6 +97,7 @@ def parse_one(text):
                     or {'PREFLOP':'FLOP', 'FLOP':'TURN', 'TURN':'RIVER'}.get(street) != next_street):
                 raise ValueError('Carte comuni incoerenti o duplicate.')
             street, board = next_street, next_board
+            last_full_raise, acted_at, ambiguous_bet = big_blind, {}, False
             for p in players.values():
                 p['bet'] = 0
             snapshot(street.title())
@@ -116,6 +129,8 @@ def parse_one(text):
         if name is None:
             continue
         action = line[len(name) + 2:]
+        previous_top = max(p['bet'] for p in players.values())
+        verb = None
         post = re.match(r'posts (small blind|big blind|the ante) ' + MONEY + r'(?: and is all-in)?$', action)
         betting = re.match(r'(calls|bets) ' + MONEY + r'(?: and is all-in)?$', action)
         raising = re.match(r'raises ' + MONEY + r' to ' + MONEY + r'(?: and is all-in)?$', action)
@@ -125,14 +140,24 @@ def parse_one(text):
         elif betting:
             invest(name, amount(betting[2]))
             kind = 'action'
+            verb = 'call' if betting[1] == 'calls' else 'bet'
+            if verb == 'bet':
+                last_full_raise = max(big_blind, amount(betting[2]))
+                ambiguous_bet = amount(betting[2]) < big_blind
         elif raising:
             invest(name, amount(raising[2]) - players[name]['bet'])
             kind = 'action'
+            verb = 'raise'
+            increment = amount(raising[2]) - previous_top
+            if increment >= last_full_raise:
+                last_full_raise = increment
         elif action.startswith('folds'):
             players[name]['folded'] = True
             kind = 'action'
+            verb = 'fold'
         elif action == 'checks':
             kind = 'action'
+            verb = 'check'
         elif action.startswith('shows ['):
             shown = cards(re.search(r'\[([^\]]+)\]', action)[1])
             if len(shown) != 2 or (name == hero and set(shown) != set(hole)):
@@ -146,7 +171,9 @@ def parse_one(text):
             continue
         else:
             raise ValueError(f'Azione non supportata: {action[:100]}')
-        snapshot(line, name, kind)
+        if kind == 'action':
+            acted_at[name] = max(p['bet'] for p in players.values())
+        snapshot(line, name, kind, verb)
     if pot != amount(total[1]):
         raise ValueError(f'Il piatto ricostruito ({pot/100:g}) non coincide con Total pot ({amount(total[1])/100:g}).')
     rake_match = re.search(r'Rake ' + MONEY, body)
@@ -160,7 +187,10 @@ def parse_one(text):
         for p in snap['players']:
             for key in ('stack', 'bet', 'invested'):
                 p[key] /= 100
-    return {'id': ident[1], 'title': lines[0], 'hero': hero, 'hole': hole,
+    initial_hero = next(p for p in snapshots[0]['players'] if p['name'] == hero)
+    final_hero = next(p for p in snapshots[-1]['players'] if p['name'] == hero)
+    return {'id': ident[1], 'title': lines[0], 'hero': hero, 'hole': hole, 'unit': unit,
+            'hero_net': round(final_hero['stack'] - initial_hero['stack'], 2),
             'button': button, 'snapshots': snapshots, 'total_pot': pot/100, 'completed': True}
 
 

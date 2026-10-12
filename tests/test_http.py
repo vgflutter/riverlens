@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import sys
 import threading
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 import urllib.error
@@ -16,6 +17,11 @@ import server
 class HttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.tmp=tempfile.TemporaryDirectory()
+        cls.archive_patch=patch.object(server,'ARCHIVE',server.Archive(Path(cls.tmp.name)/'test.sqlite3'))
+        cls.archive_patch.start()
+        cls.study_patch=patch.object(server,'STUDY',server.Study(server.ARCHIVE,lambda:server.parse_histories((server.ROOT/'examples'/'demo.txt').read_text())['hands']))
+        cls.study_patch.start()
         cls.http = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         cls.thread=threading.Thread(target=cls.http.serve_forever, daemon=True)
         cls.thread.start()
@@ -27,6 +33,9 @@ class HttpTests(unittest.TestCase):
         cls.http.shutdown()
         cls.http.server_close()
         cls.thread.join(timeout=2)
+        cls.archive_patch.stop()
+        cls.study_patch.stop()
+        cls.tmp.cleanup()
 
     def request(self,path,data=None,headers=None):
         merged={'Content-Type':'application/json','X-RiverLens-Token':server.TOKEN}
@@ -56,6 +65,19 @@ class HttpTests(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError) as error:self.request(path,data,headers)
                 self.assertEqual(error.exception.code,status)
 
+    def test_budget_and_automatic_recommendation_flow(self):
+        with self.request('/api/import',{'text':(server.ROOT/'examples'/'demo.txt').read_text()}) as reply:
+            hand=json.load(reply)['hands'][0]
+        step=next(i for i,s in enumerate(hand['snapshots']) if s['hero_decision'] and s['street']=='FLOP' and s['call'])
+        with self.request('/api/session',{'bankroll':1000,'stop_loss':200,'max_hand_loss':100,'unit':'chips'}) as reply:
+            self.assertEqual(json.load(reply)['budget']['bankroll'],1000)
+        with self.request('/api/recommend',{'source':'archive','hand_id':hand['id'],'step':step}) as reply:
+            report=json.load(reply)
+            self.assertIsNotNone(report['selected_action'])
+            self.assertLessEqual(report['selected_action']['amount_add'],report['budget']['allowed_add'])
+        with self.request('/api/archive') as reply:
+            self.assertEqual(len(json.load(reply)['hands']),2)
+
 
 class ApiAdapterTests(unittest.TestCase):
     @patch.dict(os.environ,{'OPENAI_API_KEY':'test-secret','OPENAI_MODEL':'test-model'})
@@ -80,6 +102,20 @@ class ApiAdapterTests(unittest.TestCase):
         reply.__enter__.return_value=io.BytesIO(b'{"status":"incomplete","output":[]}')
         build.return_value.open.return_value=reply
         with self.assertRaisesRegex(ValueError,'incompleta'):server.response_text('Tutor',[])
+
+    @patch.dict(os.environ,{'OPENAI_API_KEY':'test-secret','OPENAI_MODEL':'test-model'})
+    @patch('server.urllib.request.build_opener')
+    def test_structured_output_request_and_token_usage(self,build):
+        reply=MagicMock()
+        reply.__enter__.return_value=io.BytesIO(b'{"status":"completed","usage":{"input_tokens":10,"output_tokens":20},"output":[{"type":"message","content":[{"type":"output_text","text":"{}"}]}]}')
+        build.return_value.open.return_value=reply
+        schema={'type':'object','properties':{},'required':[],'additionalProperties':False}
+        before=dict(server.API_USAGE)
+        server.response_text('Tutor',[],schema)
+        payload=json.loads(build.return_value.open.call_args.args[0].data)
+        self.assertEqual(payload['text']['format']['schema'],schema)
+        self.assertTrue(payload['text']['format']['strict'])
+        self.assertEqual(server.API_USAGE['input_tokens'],before['input_tokens']+10)
 
 
 if __name__=='__main__':unittest.main()
